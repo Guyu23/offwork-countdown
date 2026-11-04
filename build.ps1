@@ -44,7 +44,7 @@ try {
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $graphics.Clear([System.Drawing.Color]::Transparent)
-    $fill = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 5, 112, 238))
+    $fill = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 15, 108, 189))
     $graphics.FillEllipse($fill, 2, 2, 60, 60)
     $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 4.5)
     $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
@@ -83,6 +83,14 @@ $cscArgs = @(
 if ($icon -and (Test-Path -LiteralPath $icon)) {
     $cscArgs += "/win32icon:$icon"
 }
+$mapleRegular = Join-Path $assets 'MapleMono-Regular.ttf'
+$mapleBold = Join-Path $assets 'MapleMono-Bold.ttf'
+if ((Test-Path -LiteralPath $mapleRegular) -and (Test-Path -LiteralPath $mapleBold)) {
+    $cscArgs += "/resource:$mapleRegular,OffWorkCountdown.Fonts.MapleMono-Regular.ttf"
+    $cscArgs += "/resource:$mapleBold,OffWorkCountdown.Fonts.MapleMono-Bold.ttf"
+} else {
+    Write-Warning '未找到 Maple Mono 字体，将回退到 Segoe UI'
+}
 foreach ($reference in $references) {
     $cscArgs += "/r:$reference"
 }
@@ -99,3 +107,5 @@ if (-not (Test-Path -LiteralPath $exe)) {
 $file = Get-Item -LiteralPath $exe
 Write-Host ("构建完成：" + $file.FullName)
 Write-Host ("文件大小：" + [math]::Round($file.Length / 1KB, 1) + " KB")
+
+

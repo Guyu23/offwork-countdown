@@ -4,6 +4,7 @@ using System;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Media;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
@@ -29,8 +30,8 @@ using WinForms = System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("下班倒计时")]
 [assembly: System.Reflection.AssemblyDescription("常驻桌面右上角的下班倒计时挂件")]
 [assembly: System.Reflection.AssemblyProduct("下班倒计时")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
 
 namespace OffWorkCountdown
 {
@@ -39,12 +40,19 @@ namespace OffWorkCountdown
     {
         public const string DefaultStart = "09:00";
         public const string DefaultEnd = "18:30";
+        public const string DefaultLanguage = "zh";
 
         [DataMember(Name = "startTime")]
         public string StartTime { get; set; }
 
         [DataMember(Name = "endTime")]
         public string EndTime { get; set; }
+
+        [DataMember(Name = "language", EmitDefaultValue = false)]
+        public string Language { get; set; }
+
+        [DataMember(Name = "soundEnabled", EmitDefaultValue = false)]
+        public bool SoundEnabled { get; set; }
 
         [DataMember(Name = "windowRight", EmitDefaultValue = false)]
         public double? WindowRight { get; set; }
@@ -56,6 +64,8 @@ namespace OffWorkCountdown
         {
             StartTime = DefaultStart;
             EndTime = DefaultEnd;
+            Language = DefaultLanguage;
+            SoundEnabled = false;
         }
 
         public static CountdownSettings CreateDefault()
@@ -96,6 +106,72 @@ namespace OffWorkCountdown
 
             normalized = value.ToString("HH:mm", CultureInfo.InvariantCulture);
             time = value.TimeOfDay;
+            return true;
+        }
+
+        /// <summary>
+        /// 更宽松的时间解析：9、900、930、1830、18:30、9:30 都接受。
+        /// </summary>
+        public static bool TryParseFlexibleTime(
+            string raw,
+            out string normalized,
+            out TimeSpan time)
+        {
+            normalized = null;
+            time = TimeSpan.Zero;
+            if (string.IsNullOrEmpty(raw)) return false;
+
+            string text = raw.Trim().Replace('：', ':');
+            string hourText;
+            string minuteText;
+
+            if (text.IndexOf(':') >= 0)
+            {
+                string[] parts = text.Split(':');
+                if (parts.Length != 2) return false;
+                hourText = parts[0].Trim();
+                minuteText = parts[1].Trim();
+                if (minuteText.Length == 0) minuteText = "0";
+            }
+            else
+            {
+                for (int i = 0; i < text.Length; i++)
+                {
+                    if (!char.IsDigit(text[i])) return false;
+                }
+                if (text.Length == 0 || text.Length > 4) return false;
+                if (text.Length <= 2)
+                {
+                    hourText = text;
+                    minuteText = "0";
+                }
+                else if (text.Length == 3)
+                {
+                    hourText = text.Substring(0, 1);
+                    minuteText = text.Substring(1);
+                }
+                else
+                {
+                    hourText = text.Substring(0, 2);
+                    minuteText = text.Substring(2);
+                }
+            }
+
+            int hour;
+            int minute;
+            if (!int.TryParse(hourText, NumberStyles.None, CultureInfo.InvariantCulture, out hour) ||
+                !int.TryParse(minuteText, NumberStyles.None, CultureInfo.InvariantCulture, out minute))
+            {
+                return false;
+            }
+            if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return false;
+
+            normalized = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0:00}:{1:00}",
+                hour,
+                minute);
+            time = new TimeSpan(hour, minute, 0);
             return true;
         }
     }
@@ -158,28 +234,38 @@ namespace OffWorkCountdown
     internal sealed class CountdownWindow : Window
     {
         private const string AppTitle = "下班倒计时";
-        private const string SettingsHint = "格式 HH:mm，下班时间需晚于上班时间";
-        private const double ExpandedWidth = 280.0;
-        private const double CollapsedWidth = 184.0;
-        private const double WindowMargin = 18.0;
+        private const double ExpandedWidth = 300.0;
+        private const double CollapsedWidth = 200.0;
+        private const double WindowMargin = 24.0;
+        private const double SettingsErrorAllowance = 24.0;
         private const double DockThreshold = 10.0;
         private const double DockSliver = 6.0;
         private const double DockSlideMs = 170.0;
         private const double DockHideDelayMs = 700.0;
+        private const string AutoStartValueName = "OffWorkCountdown";
+        private const string AutoStartKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
-        private static readonly SolidColorBrush TextPrimary = MakeBrush(0x1A, 0x23, 0x32);
-        private static readonly SolidColorBrush TextSecondary = MakeBrush(0x5C, 0x67, 0x73);
-        private static readonly SolidColorBrush TextDisabled = MakeBrush(0xA3, 0xAB, 0xB4);
-        private static readonly SolidColorBrush BorderLine = MakeBrush(0xE3, 0xE8, 0xEF);
+        private static readonly SolidColorBrush TextPrimary = MakeBrush(0x1B, 0x1F, 0x27);
+        private static readonly SolidColorBrush TextSecondary = MakeBrush(0x5F, 0x6B, 0x7A);
+        private static readonly SolidColorBrush TextDisabled = MakeBrush(0xA5, 0xAD, 0xB8);
+        private static readonly SolidColorBrush BorderLine = MakeBrush(0xE1, 0xE7, 0xEF);
         private static readonly SolidColorBrush Surface = MakeBrush(0xFF, 0xFF, 0xFF);
-        private static readonly SolidColorBrush SurfaceMuted = MakeBrush(0xF7, 0xF9, 0xFB);
-        private static readonly SolidColorBrush Track = MakeBrush(0xEE, 0xF1, 0xF4);
-        private static readonly SolidColorBrush Brand = MakeBrush(0x05, 0x70, 0xEE);
-        private static readonly SolidColorBrush BrandHover = MakeBrush(0x04, 0x54, 0xB2);
+        private static readonly SolidColorBrush SurfaceMuted = MakeBrush(0xF6, 0xF8, 0xFB);
+        private static readonly SolidColorBrush Track = MakeBrush(0xE8, 0xED, 0xF4);
+        private static readonly SolidColorBrush StepperFill = MakeBrush(0xEA, 0xEF, 0xF6);
+        private static readonly SolidColorBrush StepperLine = MakeBrush(0xD5, 0xDE, 0xE9);
+        private static readonly SolidColorBrush Brand = MakeBrush(0x0F, 0x6C, 0xBD);
+        private static readonly SolidColorBrush BrandHover = MakeBrush(0x11, 0x5E, 0xA3);
+        private static readonly SolidColorBrush BrandPressed = MakeBrush(0x0C, 0x4A, 0x8A);
         private static readonly SolidColorBrush Success = MakeBrush(0x16, 0xA3, 0x4A);
         private static readonly SolidColorBrush Danger = MakeBrush(0xDC, 0x26, 0x26);
-        private static readonly SolidColorBrush HoverFill = MakeBrush(0xF3, 0xF7, 0xFB);
-        private static readonly SolidColorBrush PressedFill = MakeBrush(0xE7, 0xEF, 0xF9);
+        private static readonly SolidColorBrush HoverFill = MakeBrush(0xF2, 0xF6, 0xFB);
+        private static readonly SolidColorBrush PressedFill = MakeBrush(0xE6, 0xEE, 0xF7);
+        private static readonly Brush CardFill = MakeCardFill();
+        private static readonly Brush CardBorder = MakeCardBorder();
+        private static readonly Brush ProgressFill = MakeProgressFill();
+        private static readonly Brush SheenFill = MakeSheenFill();
+        private static readonly Brush SpecularFill = MakeSpecularFill();
 
         private readonly CountdownSettings settings;
         private readonly DispatcherTimer timer;
@@ -196,6 +282,8 @@ namespace OffWorkCountdown
         private TextBlock countdownText;
         private TextBlock doneText;
         private TextBlock footerLeftText;
+        private Run footerCaptionRun;
+        private Run footerTimeRun;
         private TextBlock footerRightText;
         private TextBlock collapsedLabel;
         private TextBlock collapsedTime;
@@ -216,7 +304,6 @@ namespace OffWorkCountdown
         private double countdownCardHeight;
         private double settingsCardHeight;
         private double collapsedCardHeight;
-        private bool focusSettingsAfterTransition;
         private bool anchorReady;
         private bool hasCustomPosition;
         private double anchorRight;
@@ -249,10 +336,38 @@ namespace OffWorkCountdown
         private double dockSlideToLeft;
         private double dockSlideToTop;
 
+        private CheckBox soundToggle;
+        private CheckBox autoStartToggle;
+        private bool suppressSettingsApply;
+        private string language = "zh";
+
+        private Button settingsButton;
+        private Button collapseButton;
+        private Button closeSettingsButton;
+        private Button languageZhButton;
+        private Button languageEnButton;
+        private TextBlock settingsTitle;
+        private TextBlock startFieldLabel;
+        private TextBlock endFieldLabel;
+        private TextBlock soundLabel;
+        private TextBlock autoStartLabel;
+        private TextBlock languageLabel;
+        private MenuItem contextSettingsItem;
+        private MenuItem contextHideItem;
+        private MenuItem contextExitItem;
+        private WinForms.ToolStripMenuItem traySettingsItem;
+        private WinForms.ToolStripMenuItem trayExitItem;
+        private DateTime? offWorkRevealUntil;
+        private DateTime lastReminderEnd = DateTime.MinValue;
+        private SoundPlayer chimePlayer;
+        private Stream chimeStream;
+
         public CountdownWindow()
         {
             settings = SettingsStore.Load();
+            language = settings.Language == "en" ? "en" : "zh";
             RefreshTimeSpans();
+            RefreshAutoStartPath();
 
             Title = AppTitle;
             WindowStyle = WindowStyle.None;
@@ -266,7 +381,7 @@ namespace OffWorkCountdown
             ShowActivated = false;
             UseLayoutRounding = true;
             SnapsToDevicePixels = true;
-            FontFamily = new FontFamily("Segoe UI");
+            FontFamily = IsEnglish ? PickEnglishFont() : PickChineseFont();
             TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
 
             Content = BuildRoot();
@@ -279,7 +394,7 @@ namespace OffWorkCountdown
                 countdownCardHeight,
                 Math.Max(settingsCardHeight, collapsedCardHeight));
             Width = ExpandedWidth + WindowMargin * 2;
-            Height = maxCardHeight + WindowMargin * 2;
+            Height = maxCardHeight + WindowMargin * 2 + SettingsErrorAllowance;
 
             InitializeAnchor();
             anchorReady = true;
@@ -398,6 +513,7 @@ namespace OffWorkCountdown
             e.Cancel = true;
             CancelDockHide();
             StopDockSlide();
+            StopOffWorkReminder();
             Hide();
             UpdateTrayToggleText();
         }
@@ -413,6 +529,16 @@ namespace OffWorkCountdown
 
         #region 界面
 
+        private bool IsEnglish
+        {
+            get { return language == "en"; }
+        }
+
+        private string L(string chinese, string english)
+        {
+            return IsEnglish ? english : chinese;
+        }
+
         private Grid BuildRoot()
         {
             Grid root = new Grid();
@@ -424,22 +550,35 @@ namespace OffWorkCountdown
 
             shadow = new Border();
             shadow.Background = Surface;
-            shadow.CornerRadius = new CornerRadius(14);
+            shadow.CornerRadius = new CornerRadius(15);
             shadow.IsHitTestVisible = false;
-            DropShadowEffect effect = new DropShadowEffect();
-            effect.Color = Color.FromRgb(15, 23, 42);
-            effect.BlurRadius = 26;
-            effect.ShadowDepth = 4;
-            effect.Direction = 270;
-            effect.Opacity = 0.16;
-            effect.RenderingBias = RenderingBias.Performance;
-            shadow.Effect = effect;
+            DropShadowEffect farShadow = new DropShadowEffect();
+            farShadow.Color = Color.FromRgb(15, 23, 42);
+            farShadow.BlurRadius = 22;
+            farShadow.ShadowDepth = 3;
+            farShadow.Direction = 270;
+            farShadow.Opacity = 0.14;
+            farShadow.RenderingBias = RenderingBias.Performance;
+            shadow.Effect = farShadow;
+
+            Border nearShadow = new Border();
+            nearShadow.Background = Surface;
+            nearShadow.CornerRadius = new CornerRadius(15);
+            nearShadow.IsHitTestVisible = false;
+            DropShadowEffect contactShadow = new DropShadowEffect();
+            contactShadow.Color = Color.FromRgb(15, 23, 42);
+            contactShadow.BlurRadius = 8;
+            contactShadow.ShadowDepth = 2;
+            contactShadow.Direction = 270;
+            contactShadow.Opacity = 0.09;
+            contactShadow.RenderingBias = RenderingBias.Performance;
+            nearShadow.Effect = contactShadow;
 
             card = new Border();
-            card.Background = Surface;
-            card.BorderBrush = BorderLine;
+            card.Background = CardFill;
+            card.BorderBrush = CardBorder;
             card.BorderThickness = new Thickness(1);
-            card.CornerRadius = new CornerRadius(14);
+            card.CornerRadius = new CornerRadius(15);
             card.SnapsToDevicePixels = true;
             card.Cursor = Cursors.SizeAll;
 
@@ -467,6 +606,22 @@ namespace OffWorkCountdown
 
             Grid contentHost = new Grid();
             contentHost.ClipToBounds = true;
+
+            Rectangle sheen = new Rectangle();
+            sheen.Height = 46;
+            sheen.VerticalAlignment = VerticalAlignment.Top;
+            sheen.Fill = SheenFill;
+            sheen.IsHitTestVisible = false;
+            contentHost.Children.Add(sheen);
+
+            Rectangle specular = new Rectangle();
+            specular.Height = 1;
+            specular.VerticalAlignment = VerticalAlignment.Top;
+            specular.Margin = new Thickness(16, 0, 16, 0);
+            specular.Fill = SpecularFill;
+            specular.IsHitTestVisible = false;
+            contentHost.Children.Add(specular);
+
             contentHost.Children.Add(countdownView);
             contentHost.Children.Add(settingsView);
             contentHost.Children.Add(collapsedView);
@@ -477,6 +632,7 @@ namespace OffWorkCountdown
             card.MouseLeave += OnCardMouseLeave;
 
             surface.Children.Add(shadow);
+            surface.Children.Add(nearShadow);
             surface.Children.Add(card);
             root.Children.Add(surface);
 
@@ -489,7 +645,7 @@ namespace OffWorkCountdown
         private StackPanel BuildCountdownView()
         {
             StackPanel view = new StackPanel();
-            view.Margin = new Thickness(18, 14, 18, 14);
+            view.Margin = new Thickness(18, 14, 18, 16);
 
             Grid header = new Grid();
 
@@ -504,7 +660,7 @@ namespace OffWorkCountdown
             headerIcon.VerticalAlignment = VerticalAlignment.Center;
             headerIcon.Content = CreateClockIcon(16, TextSecondary);
 
-            statusLabel = MakeText("距离下班", 12, FontWeights.Normal, TextSecondary);
+            statusLabel = MakeText(L("距离下班", "Until off work"), 13, FontWeights.Normal, TextSecondary);
             status.Children.Add(headerIcon);
             status.Children.Add(statusLabel);
 
@@ -513,13 +669,13 @@ namespace OffWorkCountdown
             actions.HorizontalAlignment = HorizontalAlignment.Right;
             actions.VerticalAlignment = VerticalAlignment.Top;
 
-            Button settingsButton = CreateIconButton(
-                CreateSlidersIcon(16, TextSecondary),
-                "设置",
+            settingsButton = CreateIconButton(
+                CreateSettingsIcon(TextSecondary),
+                L("设置", "Settings"),
                 delegate { ShowSettings(); });
-            Button collapseButton = CreateIconButton(
+            collapseButton = CreateIconButton(
                 CreateMinusIcon(16, TextSecondary),
-                "收起",
+                L("收起", "Collapse"),
                 delegate { Collapse(); });
             settingsButton.Margin = new Thickness(0, 0, 2, 0);
             actions.Children.Add(settingsButton);
@@ -530,15 +686,16 @@ namespace OffWorkCountdown
             view.Children.Add(header);
 
             Grid timeHost = new Grid();
-            timeHost.Height = 38;
+            timeHost.Height = 42;
             timeHost.Margin = new Thickness(0, 6, 0, 0);
 
-            countdownText = MakeText("00:00:00", 32, FontWeights.SemiBold, TextPrimary);
+            countdownText = MakeText("00:00:00", 34, FontWeights.SemiBold, TextPrimary);
+            countdownText.FontFamily = PickEnglishFont();
             countdownText.VerticalAlignment = VerticalAlignment.Center;
-            countdownText.LineHeight = 37;
+            countdownText.LineHeight = 40;
             Typography.SetNumeralAlignment(countdownText, FontNumeralAlignment.Tabular);
 
-            doneText = MakeText("今天辛苦了。", 24, FontWeights.SemiBold, Success);
+            doneText = MakeText(L("今天辛苦了。", "Good work today."), 26, FontWeights.SemiBold, Success);
             doneText.VerticalAlignment = VerticalAlignment.Center;
             doneText.Visibility = Visibility.Collapsed;
 
@@ -547,18 +704,18 @@ namespace OffWorkCountdown
             view.Children.Add(timeHost);
 
             progressTrack = new Grid();
-            progressTrack.Height = 3;
+            progressTrack.Height = 4;
             progressTrack.Margin = new Thickness(0, 12, 0, 0);
             progressTrack.ClipToBounds = true;
             progressTrack.SizeChanged += delegate { UpdateProgressWidth(); };
 
             Border trackBackground = new Border();
             trackBackground.Background = Track;
-            trackBackground.CornerRadius = new CornerRadius(1.5);
+            trackBackground.CornerRadius = new CornerRadius(2);
 
             progressFill = new Border();
-            progressFill.Background = TextPrimary;
-            progressFill.CornerRadius = new CornerRadius(1.5);
+            progressFill.Background = ProgressFill;
+            progressFill.CornerRadius = new CornerRadius(2);
             progressFill.HorizontalAlignment = HorizontalAlignment.Left;
 
             progressTrack.Children.Add(trackBackground);
@@ -568,8 +725,18 @@ namespace OffWorkCountdown
             Grid footer = new Grid();
             footer.Margin = new Thickness(0, 8, 0, 0);
 
-            footerLeftText = MakeText("下班时间 18:30", 12, FontWeights.Normal, TextSecondary);
-            footerRightText = MakeText("100%", 12, FontWeights.Normal, TextSecondary);
+            footerLeftText = new TextBlock();
+            footerLeftText.FontSize = 13;
+            footerLeftText.Foreground = TextSecondary;
+            footerLeftText.VerticalAlignment = VerticalAlignment.Center;
+            footerCaptionRun = new Run();
+            footerTimeRun = new Run();
+            footerTimeRun.FontFamily = PickEnglishFont();
+            footerLeftText.Inlines.Add(footerCaptionRun);
+            footerLeftText.Inlines.Add(footerTimeRun);
+
+            footerRightText = MakeText("100%", 13, FontWeights.Normal, TextSecondary);
+            footerRightText.FontFamily = PickEnglishFont();
             footerRightText.HorizontalAlignment = HorizontalAlignment.Right;
             footer.Children.Add(footerLeftText);
             footer.Children.Add(footerRightText);
@@ -585,21 +752,22 @@ namespace OffWorkCountdown
             view.Margin = new Thickness(18, 14, 20, 15);
 
             Grid header = new Grid();
-            TextBlock title = MakeText("倒计时设置", 14, FontWeights.SemiBold, TextPrimary);
-            title.VerticalAlignment = VerticalAlignment.Center;
-            Button closeButton = CreateIconButton(
+            settingsTitle = MakeText(L("倒计时设置", "Countdown settings"), 15.5, FontWeights.SemiBold, TextPrimary);
+            settingsTitle.VerticalAlignment = VerticalAlignment.Center;
+            closeSettingsButton = CreateIconButton(
                 CreateCloseIcon(16, TextSecondary),
-                "关闭设置",
+                L("关闭设置", "Close settings"),
                 delegate { ShowCountdown(); });
-            closeButton.HorizontalAlignment = HorizontalAlignment.Right;
-            header.Children.Add(title);
-            header.Children.Add(closeButton);
+            closeSettingsButton.HorizontalAlignment = HorizontalAlignment.Right;
+            header.Children.Add(settingsTitle);
+            header.Children.Add(closeSettingsButton);
             view.Children.Add(header);
 
-            settingsError = MakeText(SettingsHint, 10.5, FontWeights.Normal, TextDisabled);
+            settingsError = MakeText(string.Empty, 11, FontWeights.Normal, TextDisabled);
             settingsError.Margin = new Thickness(0, 6, 0, 0);
-            settingsError.MinHeight = 16;
+            settingsError.MinHeight = 0;
             settingsError.TextWrapping = TextWrapping.Wrap;
+            settingsError.Visibility = Visibility.Collapsed;
 
             Grid fields = new Grid();
             fields.Margin = new Thickness(0, 12, 0, 0);
@@ -612,13 +780,15 @@ namespace OffWorkCountdown
             endBox.Text = settings.EndTime;
 
             StackPanel startField = new StackPanel();
-            startField.Children.Add(MakeText("上班时间", 11, FontWeights.Normal, TextSecondary));
+            startFieldLabel = MakeText(L("上班时间", "Start time"), 12.5, FontWeights.Normal, TextSecondary);
+            startField.Children.Add(startFieldLabel);
             startBorder.Margin = new Thickness(0, 5, 0, 0);
             startField.Children.Add(startBorder);
 
             StackPanel endField = new StackPanel();
             endField.Margin = new Thickness(10, 0, 0, 0);
-            endField.Children.Add(MakeText("下班时间", 11, FontWeights.Normal, TextSecondary));
+            endFieldLabel = MakeText(L("下班时间", "End time"), 12.5, FontWeights.Normal, TextSecondary);
+            endField.Children.Add(endFieldLabel);
             endBorder.Margin = new Thickness(0, 5, 0, 0);
             endField.Children.Add(endBorder);
 
@@ -628,34 +798,218 @@ namespace OffWorkCountdown
             fields.Children.Add(endField);
             view.Children.Add(fields);
 
+            Grid soundRow = new Grid();
+            soundRow.Margin = new Thickness(0, 10, 0, 0);
+
+            soundLabel = MakeText(L("下班提醒音", "End-of-day sound"), 12.5, FontWeights.Normal, TextSecondary);
+            soundLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            soundToggle = CreateToggleSwitch();
+            soundToggle.HorizontalAlignment = HorizontalAlignment.Right;
+            soundToggle.VerticalAlignment = VerticalAlignment.Center;
+            soundToggle.IsChecked = settings.SoundEnabled;
+            AutomationProperties.SetName(
+                soundToggle,
+                L("开启下班提醒音", "Enable end-of-day sound"));
+            soundToggle.Checked += delegate
+            {
+                if (suppressSettingsApply || settings.SoundEnabled) return;
+                settings.SoundEnabled = true;
+                SettingsStore.Save(settings);
+            };
+            soundToggle.Unchecked += delegate
+            {
+                if (suppressSettingsApply || !settings.SoundEnabled) return;
+                settings.SoundEnabled = false;
+                SettingsStore.Save(settings);
+            };
+
+            soundRow.Children.Add(soundLabel);
+            soundRow.Children.Add(soundToggle);
+            view.Children.Add(soundRow);
+
+            Grid autoRow = new Grid();
+            autoRow.Margin = new Thickness(0, 6, 0, 0);
+
+            autoStartLabel = MakeText(L("开机自启", "Start with Windows"), 12.5, FontWeights.Normal, TextSecondary);
+            autoStartLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            autoStartToggle = CreateToggleSwitch();
+            autoStartToggle.HorizontalAlignment = HorizontalAlignment.Right;
+            autoStartToggle.VerticalAlignment = VerticalAlignment.Center;
+            autoStartToggle.IsChecked = IsAutoStartEnabled();
+            AutomationProperties.SetName(
+                autoStartToggle,
+                L("开机自启开关", "Start with Windows toggle"));
+            autoStartToggle.Checked += delegate
+            {
+                if (suppressSettingsApply) return;
+                SetAutoStart(true);
+            };
+            autoStartToggle.Unchecked += delegate
+            {
+                if (suppressSettingsApply) return;
+                SetAutoStart(false);
+            };
+
+            autoRow.Children.Add(autoStartLabel);
+            autoRow.Children.Add(autoStartToggle);
+            view.Children.Add(autoRow);
+
+            Grid languageRow = new Grid();
+            languageRow.Margin = new Thickness(0, 8, 0, 0);
+
+            languageLabel = MakeText(L("语言", "Language"), 12.5, FontWeights.Normal, TextSecondary);
+            languageLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            Border languageTrack = new Border();
+            languageTrack.Height = 32;
+            languageTrack.Padding = new Thickness(2);
+            languageTrack.Background = SurfaceMuted;
+            languageTrack.BorderBrush = BorderLine;
+            languageTrack.BorderThickness = new Thickness(1);
+            languageTrack.CornerRadius = new CornerRadius(9);
+            languageTrack.HorizontalAlignment = HorizontalAlignment.Right;
+            languageTrack.VerticalAlignment = VerticalAlignment.Center;
+
+            Grid languageGrid = new Grid();
+            languageGrid.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(56)
+            });
+            languageGrid.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(56)
+            });
+
+            languageZhButton = CreateLanguageSegmentButton(
+                "中文",
+                delegate { SetLanguage("zh"); });
+            languageEnButton = CreateLanguageSegmentButton(
+                "English",
+                delegate { SetLanguage("en"); });
+            Grid.SetColumn(languageEnButton, 1);
+            languageGrid.Children.Add(languageZhButton);
+            languageGrid.Children.Add(languageEnButton);
+            languageTrack.Child = languageGrid;
+
+            languageRow.Children.Add(languageLabel);
+            languageRow.Children.Add(languageTrack);
+            view.Children.Add(languageRow);
             view.Children.Add(settingsError);
-
-            Grid footer = new Grid();
-            footer.Margin = new Thickness(0, 11, 0, 0);
-
-            Button restore = CreateLinkButton("恢复默认", delegate { ResetSettings(); });
-            restore.HorizontalAlignment = HorizontalAlignment.Left;
-
-            StackPanel actions = new StackPanel();
-            actions.Orientation = Orientation.Horizontal;
-            actions.HorizontalAlignment = HorizontalAlignment.Right;
-
-            Button cancel = CreateActionButton("取消", false, delegate { ShowCountdown(); });
-            cancel.Margin = new Thickness(0, 0, 8, 0);
-            Button save = CreateActionButton("保存", true, delegate { SaveSettings(); });
-            actions.Children.Add(cancel);
-            actions.Children.Add(save);
-
-            footer.Children.Add(restore);
-            footer.Children.Add(actions);
-            view.Children.Add(footer);
+            UpdateLanguageSegments();
 
             startBox.KeyDown += OnSettingsKeyDown;
             endBox.KeyDown += OnSettingsKeyDown;
-            AutomationProperties.SetName(startBox, "上班时间");
-            AutomationProperties.SetName(endBox, "下班时间");
+            AutomationProperties.SetName(startBox, L("上班时间", "Start time"));
+            AutomationProperties.SetName(endBox, L("下班时间", "End time"));
 
             return view;
+        }
+
+        private Button CreateLanguageSegmentButton(string text, RoutedEventHandler click)
+        {
+            Button button = new Button();
+            button.Content = text;
+            button.Height = 24;
+            button.MinWidth = 56;
+            button.Padding = new Thickness(4, 0, 4, 0);
+            button.FontSize = 11.5;
+            button.BorderThickness = new Thickness(0);
+            button.Background = Brushes.Transparent;
+            button.Cursor = Cursors.Hand;
+            button.Focusable = false;
+            button.Click += click;
+            AutomationProperties.SetName(button, text);
+
+            ControlTemplate template = new ControlTemplate(typeof(Button));
+            FrameworkElementFactory background = new FrameworkElementFactory(typeof(Border));
+            background.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+            background.SetValue(
+                Border.BackgroundProperty,
+                new TemplateBindingExtension(Control.BackgroundProperty));
+            FrameworkElementFactory presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+            presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            background.AppendChild(presenter);
+            template.VisualTree = background;
+            button.Template = template;
+            return button;
+        }
+
+        private void SetLanguage(string newLanguage)
+        {
+            if (newLanguage != "en") newLanguage = "zh";
+            if (language == newLanguage)
+            {
+                UpdateLanguageSegments();
+                return;
+            }
+
+            language = newLanguage;
+            settings.Language = newLanguage;
+            SettingsStore.Save(settings);
+            ResetSettingsMessage();
+            ApplyLanguage();
+        }
+
+        private void UpdateLanguageSegments()
+        {
+            if (languageZhButton == null || languageEnButton == null) return;
+            bool english = IsEnglish;
+            languageZhButton.FontFamily = PickChineseFont();
+            languageEnButton.FontFamily = PickEnglishFont();
+            languageZhButton.Background = english ? Brushes.Transparent : Brand;
+            languageZhButton.Foreground = english ? TextSecondary : Brushes.White;
+            languageZhButton.FontWeight = english ? FontWeights.Normal : FontWeights.SemiBold;
+            languageEnButton.Background = english ? Brand : Brushes.Transparent;
+            languageEnButton.Foreground = english ? Brushes.White : TextSecondary;
+            languageEnButton.FontWeight = english ? FontWeights.SemiBold : FontWeights.Normal;
+        }
+
+        private static CheckBox CreateToggleSwitch()
+        {
+            CheckBox box = new CheckBox();
+            box.Width = 34;
+            box.Height = 18;
+            box.Focusable = false;
+            box.Cursor = Cursors.Hand;
+            box.FocusVisualStyle = null;
+
+            ControlTemplate template = new ControlTemplate(typeof(CheckBox));
+            FrameworkElementFactory track = new FrameworkElementFactory(typeof(Border));
+            track.Name = "track";
+            track.SetValue(Border.CornerRadiusProperty, new CornerRadius(9));
+            track.SetValue(Border.BackgroundProperty, Track);
+
+            FrameworkElementFactory knob = new FrameworkElementFactory(typeof(Border));
+            knob.Name = "knob";
+            knob.SetValue(FrameworkElement.WidthProperty, 14.0);
+            knob.SetValue(FrameworkElement.HeightProperty, 14.0);
+            knob.SetValue(Border.CornerRadiusProperty, new CornerRadius(7));
+            knob.SetValue(Border.BackgroundProperty, Brushes.White);
+            knob.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Left);
+            knob.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            knob.SetValue(FrameworkElement.MarginProperty, new Thickness(2, 0, 0, 0));
+            track.AppendChild(knob);
+            template.VisualTree = track;
+
+            Trigger on = new Trigger();
+            on.Property = ToggleButton.IsCheckedProperty;
+            on.Value = true;
+            on.Setters.Add(new Setter(Border.BackgroundProperty, Brand, "track"));
+            on.Setters.Add(new Setter(
+                FrameworkElement.HorizontalAlignmentProperty,
+                HorizontalAlignment.Right,
+                "knob"));
+            on.Setters.Add(new Setter(
+                FrameworkElement.MarginProperty,
+                new Thickness(0, 0, 2, 0),
+                "knob"));
+            template.Triggers.Add(on);
+
+            box.Template = template;
+            return box;
         }
 
         private Button BuildCollapsedView()
@@ -672,11 +1026,12 @@ namespace OffWorkCountdown
             collapsedIcon.VerticalAlignment = VerticalAlignment.Center;
             collapsedIcon.Content = CreateClockIcon(16, TextSecondary);
 
-            collapsedLabel = MakeText("距离下班", 11, FontWeights.Normal, TextSecondary);
+            collapsedLabel = MakeText(L("距离下班", "Until off work"), 12.5, FontWeights.Normal, TextSecondary);
             collapsedLabel.VerticalAlignment = VerticalAlignment.Center;
             collapsedLabel.Margin = new Thickness(0, 0, 6, 0);
 
-            collapsedTime = MakeText("00:00:00", 13, FontWeights.SemiBold, TextPrimary);
+            collapsedTime = MakeText("00:00:00", 15, FontWeights.SemiBold, TextPrimary);
+            collapsedTime.FontFamily = PickEnglishFont();
             collapsedTime.VerticalAlignment = VerticalAlignment.Center;
 
             content.Children.Add(collapsedIcon);
@@ -693,8 +1048,8 @@ namespace OffWorkCountdown
             view.VerticalContentAlignment = VerticalAlignment.Center;
             view.Template = CreateBlankButtonTemplate();
             view.Click += delegate { ShowCountdown(); };
-            ToolTipService.SetToolTip(view, "拖动调整位置，点击展开");
-            AutomationProperties.SetName(view, "展开下班倒计时");
+            ToolTipService.SetToolTip(view, L("拖动调整位置，点击展开", "Drag to move, click to expand"));
+            AutomationProperties.SetName(view, L("展开下班倒计时", "Expand countdown"));
             return view;
         }
 
@@ -716,21 +1071,25 @@ namespace OffWorkCountdown
             ContextMenu menu = new ContextMenu();
 
             MenuItem settingsItem = new MenuItem();
-            settingsItem.Header = "设置";
+            contextSettingsItem = settingsItem;
+            settingsItem.Header = L("设置", "Settings");
             settingsItem.Click += delegate { ShowSettings(); };
 
             MenuItem hideItem = new MenuItem();
-            hideItem.Header = "隐藏窗口";
+            contextHideItem = hideItem;
+            hideItem.Header = L("隐藏窗口", "Hide window");
             hideItem.Click += delegate
             {
                 CancelDockHide();
                 StopDockSlide();
+                StopOffWorkReminder();
                 Hide();
                 UpdateTrayToggleText();
             };
 
             MenuItem exitItem = new MenuItem();
-            exitItem.Header = "退出";
+            contextExitItem = exitItem;
+            exitItem.Header = L("退出", "Exit");
             exitItem.Click += delegate { ExitApp(); };
 
             menu.Items.Add(settingsItem);
@@ -776,7 +1135,7 @@ namespace OffWorkCountdown
             FrameworkElementFactory border = new FrameworkElementFactory(typeof(Border));
             border.Name = "bg";
             border.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
+            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
             FrameworkElementFactory presenter = new FrameworkElementFactory(typeof(ContentPresenter));
             presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
             presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
@@ -815,7 +1174,7 @@ namespace OffWorkCountdown
         {
             SolidColorBrush baseBrush = primary ? Brand : Brushes.Transparent;
             SolidColorBrush hoverBrush = primary ? BrandHover : HoverFill;
-            SolidColorBrush pressedBrush = primary ? BrandHover : PressedFill;
+            SolidColorBrush pressedBrush = primary ? BrandPressed : PressedFill;
 
             Button button = new Button();
             button.Content = text;
@@ -834,7 +1193,7 @@ namespace OffWorkCountdown
             FrameworkElementFactory border = new FrameworkElementFactory(typeof(Border));
             border.Name = "bg";
             border.SetValue(Border.BackgroundProperty, baseBrush);
-            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(7));
+            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(8));
             border.SetValue(Border.PaddingProperty, new Thickness(12, 0, 12, 0));
             FrameworkElementFactory presenter = new FrameworkElementFactory(typeof(ContentPresenter));
             presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
@@ -891,24 +1250,67 @@ namespace OffWorkCountdown
         private Border CreateTimeInput(out TextBox input)
         {
             Border shell = new Border();
-            shell.Height = 32;
-            shell.Padding = new Thickness(8, 0, 8, 0);
+            shell.Height = 38;
             shell.Background = SurfaceMuted;
             shell.BorderBrush = BorderLine;
             shell.BorderThickness = new Thickness(1);
-            shell.CornerRadius = new CornerRadius(7);
+            shell.CornerRadius = new CornerRadius(9);
+
+            Grid content = new Grid();
+            content.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(26)
+            });
+            content.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1)
+            });
+            content.ColumnDefinitions.Add(new ColumnDefinition());
+            content.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1)
+            });
+            content.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(26)
+            });
 
             input = new TextBox();
             input.MaxLength = 5;
-            input.FontSize = 13;
+            input.FontSize = 14.5;
+            input.FontFamily = PickEnglishFont();
             input.Foreground = TextPrimary;
             input.CaretBrush = TextPrimary;
             input.Background = Brushes.Transparent;
             input.BorderThickness = new Thickness(0);
             input.Padding = new Thickness(0);
+            input.Margin = new Thickness(4, 0, 4, 0);
             input.VerticalContentAlignment = VerticalAlignment.Center;
+            input.TextAlignment = TextAlignment.Center;
             input.FocusVisualStyle = null;
-            shell.Child = input;
+            Grid.SetColumn(input, 2);
+            content.Children.Add(input);
+            TextBox inputBox = input;
+
+            Button minus = CreateTimeStepButton(false, input, -30, true);
+            Grid.SetColumn(minus, 0);
+            content.Children.Add(minus);
+
+            Border leftDivider = new Border();
+            leftDivider.Background = StepperLine;
+            Grid.SetColumn(leftDivider, 1);
+            content.Children.Add(leftDivider);
+
+            Border rightDivider = new Border();
+            rightDivider.Background = StepperLine;
+            Grid.SetColumn(rightDivider, 3);
+            content.Children.Add(rightDivider);
+
+            Button plus = CreateTimeStepButton(true, input, 30, false);
+            Grid.SetColumn(plus, 4);
+            content.Children.Add(plus);
+
+            shell.Child = content;
 
             input.GotFocus += delegate
             {
@@ -919,9 +1321,176 @@ namespace OffWorkCountdown
             {
                 shell.Background = SurfaceMuted;
                 shell.BorderBrush = BorderLine;
+                NormalizeTimeBox(inputBox);
+                ApplyTimeSettings();
             };
             input.TextChanged += delegate { ResetSettingsMessage(); };
             return shell;
+        }
+
+        private Button CreateTimeStepButton(bool plus, TextBox input, int minutes, bool left)
+        {
+            Button button = new Button();
+            button.Content = CreateStepperIcon(plus, 18, TextSecondary);
+            button.Width = 26;
+            button.Height = 36;
+            button.Padding = new Thickness(0);
+            button.Background = StepperFill;
+            button.BorderThickness = new Thickness(0);
+            button.Focusable = false;
+            button.Cursor = Cursors.Hand;
+            button.Click += delegate
+            {
+                BumpTime(input, minutes);
+                ApplyStepperTime(input == endBox);
+            };
+
+            ControlTemplate template = new ControlTemplate(typeof(Button));
+            FrameworkElementFactory background = new FrameworkElementFactory(typeof(Border));
+            background.Name = "zone";
+            background.SetValue(Border.BackgroundProperty, StepperFill);
+            background.SetValue(
+                Border.CornerRadiusProperty,
+                left ? new CornerRadius(8, 0, 0, 8) : new CornerRadius(0, 8, 8, 0));
+            FrameworkElementFactory presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+            presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            background.AppendChild(presenter);
+            template.VisualTree = background;
+
+            Trigger hover = new Trigger();
+            hover.Property = UIElement.IsMouseOverProperty;
+            hover.Value = true;
+            hover.Setters.Add(new Setter(Border.BackgroundProperty, HoverFill, "zone"));
+            template.Triggers.Add(hover);
+
+            Trigger pressed = new Trigger();
+            pressed.Property = ButtonBase.IsPressedProperty;
+            pressed.Value = true;
+            pressed.Setters.Add(new Setter(Border.BackgroundProperty, StepperLine, "zone"));
+            template.Triggers.Add(pressed);
+
+            button.Template = template;
+            return button;
+        }
+
+        private static Viewbox CreateStepperIcon(bool plus, double size, Brush stroke)
+        {
+            Canvas canvas = new Canvas();
+            canvas.Width = 18;
+            canvas.Height = 18;
+
+            Line horizontal = new Line();
+            horizontal.X1 = 3.5;
+            horizontal.Y1 = 9;
+            horizontal.X2 = 14.5;
+            horizontal.Y2 = 9;
+            horizontal.Stroke = stroke;
+            horizontal.StrokeThickness = 2;
+            horizontal.StrokeStartLineCap = PenLineCap.Round;
+            horizontal.StrokeEndLineCap = PenLineCap.Round;
+            canvas.Children.Add(horizontal);
+
+            if (plus)
+            {
+                Line vertical = new Line();
+                vertical.X1 = 9;
+                vertical.Y1 = 3.5;
+                vertical.X2 = 9;
+                vertical.Y2 = 14.5;
+                vertical.Stroke = stroke;
+                vertical.StrokeThickness = 2;
+                vertical.StrokeStartLineCap = PenLineCap.Round;
+                vertical.StrokeEndLineCap = PenLineCap.Round;
+                canvas.Children.Add(vertical);
+            }
+
+            Viewbox box = new Viewbox();
+            box.Width = size;
+            box.Height = size;
+            box.Stretch = Stretch.Uniform;
+            box.Child = canvas;
+            return box;
+        }
+
+        private static void BumpTime(TextBox input, int minutes)
+        {
+            string normalized;
+            TimeSpan time;
+            if (!CountdownSettings.TryParseFlexibleTime(input.Text, out normalized, out time))
+            {
+                time = TimeSpan.Zero;
+            }
+
+            int total = (int)time.TotalMinutes + minutes;
+            total %= 24 * 60;
+            if (total < 0) total += 24 * 60;
+            input.Text = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0:00}:{1:00}",
+                total / 60,
+                total % 60);
+            input.CaretIndex = input.Text.Length;
+        }
+
+        private static void NormalizeTimeBox(TextBox input)
+        {
+            if (input == null) return;
+            string normalized;
+            TimeSpan time;
+            if (CountdownSettings.TryParseFlexibleTime(input.Text, out normalized, out time) &&
+                normalized != input.Text)
+            {
+                input.Text = normalized;
+                input.CaretIndex = input.Text.Length;
+            }
+        }
+
+        private static bool IsAutoStartEnabled()
+        {
+            try
+            {
+                using (Microsoft.Win32.RegistryKey key =
+                    Microsoft.Win32.Registry.CurrentUser.OpenSubKey(AutoStartKeyPath, false))
+                {
+                    return key != null && key.GetValue(AutoStartValueName) != null;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void SetAutoStart(bool enabled)
+        {
+            try
+            {
+                using (Microsoft.Win32.RegistryKey key =
+                    Microsoft.Win32.Registry.CurrentUser.CreateSubKey(AutoStartKeyPath))
+                {
+                    if (key == null) return;
+                    if (enabled)
+                    {
+                        key.SetValue(
+                            AutoStartValueName,
+                            "\"" + WinForms.Application.ExecutablePath + "\"");
+                    }
+                    else if (key.GetValue(AutoStartValueName) != null)
+                    {
+                        key.DeleteValue(AutoStartValueName, false);
+                    }
+                }
+            }
+            catch
+            {
+                // 注册表不可写时静默失败
+            }
+        }
+
+        private static void RefreshAutoStartPath()
+        {
+            if (IsAutoStartEnabled()) SetAutoStart(true);
         }
 
         #endregion
@@ -936,32 +1505,32 @@ namespace OffWorkCountdown
 
             trayDrawingIcon = Drawing.Icon.FromHandle(trayIconHandle);
             tray.Icon = trayDrawingIcon;
-            tray.Text = AppTitle;
+            tray.Text = L("下班倒计时", "OffWorkCountdown");
             tray.Visible = true;
             tray.DoubleClick += delegate { ShowWidget(); };
 
             WinForms.ContextMenuStrip menu = new WinForms.ContextMenuStrip();
             trayToggleItem = new WinForms.ToolStripMenuItem();
-            trayToggleItem.Text = "隐藏窗口";
+            trayToggleItem.Text = L("隐藏窗口", "Hide window");
             trayToggleItem.Click += delegate { ToggleVisibility(); };
 
-            WinForms.ToolStripMenuItem settingsItem = new WinForms.ToolStripMenuItem();
-            settingsItem.Text = "设置";
-            settingsItem.Click += delegate
+            traySettingsItem = new WinForms.ToolStripMenuItem();
+            traySettingsItem.Text = L("设置", "Settings");
+            traySettingsItem.Click += delegate
             {
                 ShowWidget();
                 Activate();
                 ShowSettings();
             };
 
-            WinForms.ToolStripMenuItem exitItem = new WinForms.ToolStripMenuItem();
-            exitItem.Text = "退出";
-            exitItem.Click += delegate { ExitApp(); };
+            trayExitItem = new WinForms.ToolStripMenuItem();
+            trayExitItem.Text = L("退出", "Exit");
+            trayExitItem.Click += delegate { ExitApp(); };
 
             menu.Items.Add(trayToggleItem);
-            menu.Items.Add(settingsItem);
+            menu.Items.Add(traySettingsItem);
             menu.Items.Add(new WinForms.ToolStripSeparator());
-            menu.Items.Add(exitItem);
+            menu.Items.Add(trayExitItem);
             tray.ContextMenuStrip = menu;
         }
 
@@ -985,6 +1554,7 @@ namespace OffWorkCountdown
             {
                 CancelDockHide();
                 StopDockSlide();
+                StopOffWorkReminder();
                 Hide();
             }
             else
@@ -997,7 +1567,7 @@ namespace OffWorkCountdown
         private void UpdateTrayToggleText()
         {
             if (trayToggleItem == null) return;
-            trayToggleItem.Text = IsVisible ? "隐藏窗口" : "显示窗口";
+            trayToggleItem.Text = IsVisible ? L("隐藏窗口", "Hide window") : L("显示窗口", "Show window");
         }
 
         private void ExitApp()
@@ -1045,8 +1615,8 @@ namespace OffWorkCountdown
         {
             if (!anchorReady) return;
 
-            double cardWidth = surface.Width;
-            double cardHeight = surface.Height;
+            double cardWidth = card != null && card.ActualWidth > 0 ? card.ActualWidth : surface.Width;
+            double cardHeight = card != null && card.ActualHeight > 0 ? card.ActualHeight : surface.Height;
             if (double.IsNaN(cardWidth) || cardWidth <= 0)
             {
                 cardWidth = Math.Max(0.0, Width - WindowMargin * 2);
@@ -1057,17 +1627,16 @@ namespace OffWorkCountdown
             }
             if (cardWidth <= 0 || cardHeight <= 0) return;
 
-            // 只保证卡片本身在屏幕内；窗口四周/下方多出来的透明区域可以挂到屏幕外，
-            // 这样拖到屏幕底部时不会被误判为“挂出屏幕”而弹回顶部。
+            // 卡片四周留出一个窗口边距，阴影和圆角不会被屏幕边缘/任务栏裁掉。
             Rect work = WorkAreaForCard(anchorRight, anchorTop, cardWidth, cardHeight);
             double newRight = Clamp(
                 anchorRight,
-                work.Left + cardWidth + WindowMargin,
-                work.Right + WindowMargin);
+                work.Left + cardWidth + WindowMargin * 2,
+                work.Right);
             double newTop = Clamp(
                 anchorTop,
-                work.Top - WindowMargin,
-                work.Bottom - cardHeight - WindowMargin);
+                work.Top,
+                work.Bottom - cardHeight - WindowMargin * 2);
 
             bool moved =
                 Math.Abs(newRight - anchorRight) > 0.5 ||
@@ -1103,6 +1672,32 @@ namespace OffWorkCountdown
             return new Rect(work.Left / scale, work.Top / scale, work.Width / scale, work.Height / scale);
         }
 
+        private Rect ScreenBoundsForCard(
+            double windowRight,
+            double windowTop,
+            double cardWidth,
+            double cardHeight)
+        {
+            double centerX = windowRight - WindowMargin - cardWidth / 2.0;
+            double centerY = windowTop + WindowMargin + cardHeight / 2.0;
+            return ScreenBoundsContaining(centerX, centerY);
+        }
+
+        private Rect ScreenBoundsContaining(double x, double y)
+        {
+            double scale = 1;
+            PresentationSource source = PresentationSource.FromVisual(this);
+            if (source != null && source.CompositionTarget != null)
+            {
+                scale = source.CompositionTarget.TransformToDevice.M11;
+                if (scale <= 0) scale = 1;
+            }
+
+            System.Drawing.Rectangle bounds = WinForms.Screen.FromPoint(
+                new System.Drawing.Point((int)Math.Round(x * scale), (int)Math.Round(y * scale))).Bounds;
+            return new Rect(bounds.Left / scale, bounds.Top / scale, bounds.Width / scale, bounds.Height / scale);
+        }
+
         #region 贴边隐藏
 
         private static double Clamp(double value, double min, double max)
@@ -1112,49 +1707,56 @@ namespace OffWorkCountdown
             return value;
         }
 
-        private DockEdge FindDockEdge(Rect work)
+        private DockEdge FindDockEdge(Rect work, Rect screen)
         {
-            double cardWidth = surface.Width;
-            double cardHeight = surface.Height;
+            double cardWidth = card != null && card.ActualWidth > 0
+                ? card.ActualWidth
+                : surface.Width;
+            double cardHeight = card != null && card.ActualHeight > 0
+                ? card.ActualHeight
+                : surface.Height;
             double cardRight = Left + Width - WindowMargin;
             double cardLeft = cardRight - cardWidth;
             double cardTop = Top + WindowMargin;
             double cardBottom = cardTop + cardHeight;
 
+            // 上下优先：卡片落在角落时，优先生效上下隐藏。
             double bestDistance = DockThreshold;
             DockEdge best = DockEdge.None;
-            double distance = cardLeft - work.Left;
+            double distance = Top - work.Top;
             if (distance < bestDistance)
             {
                 bestDistance = distance;
-                best = DockEdge.Left;
+                best = DockEdge.Top;
             }
+            distance = screen.Bottom - cardBottom;
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = DockEdge.Bottom;
+            }
+            if (best != DockEdge.None) return best;
+
             distance = work.Right - cardRight;
             if (distance < bestDistance)
             {
                 bestDistance = distance;
                 best = DockEdge.Right;
             }
-            distance = cardTop - work.Top;
+            distance = cardLeft - work.Left;
             if (distance < bestDistance)
             {
                 bestDistance = distance;
-                best = DockEdge.Top;
-            }
-            distance = work.Bottom - cardBottom;
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                best = DockEdge.Bottom;
+                best = DockEdge.Left;
             }
             return best;
         }
 
-        private void DockAt(DockEdge edge, Rect work)
+        private void DockAt(DockEdge edge, Rect work, Rect screen)
         {
             dockEdge = edge;
-            double cardWidth = surface.Width;
-            double cardHeight = surface.Height;
+            double cardWidth = card != null && card.ActualWidth > 0 ? card.ActualWidth : surface.Width;
+            double cardHeight = card != null && card.ActualHeight > 0 ? card.ActualHeight : surface.Height;
 
             if (edge == DockEdge.Left || edge == DockEdge.Right)
             {
@@ -1174,7 +1776,7 @@ namespace OffWorkCountdown
                     work.Right + WindowMargin);
                 anchorTop = edge == DockEdge.Top
                     ? work.Top - WindowMargin
-                    : work.Bottom - cardHeight - WindowMargin;
+                    : screen.Bottom - cardHeight - WindowMargin;
             }
 
             hasCustomPosition = true;
@@ -1185,9 +1787,10 @@ namespace OffWorkCountdown
         private void RepositionDockedView()
         {
             if (dockEdge == DockEdge.None) return;
-            double cardWidth = surface.Width;
-            double cardHeight = surface.Height;
+            double cardWidth = card != null && card.ActualWidth > 0 ? card.ActualWidth : surface.Width;
+            double cardHeight = card != null && card.ActualHeight > 0 ? card.ActualHeight : surface.Height;
             Rect work = WorkAreaForCard(anchorRight, anchorTop, cardWidth, cardHeight);
+            Rect screen = ScreenBoundsForCard(anchorRight, anchorTop, cardWidth, cardHeight);
 
             if (dockEdge == DockEdge.Left || dockEdge == DockEdge.Right)
             {
@@ -1207,7 +1810,7 @@ namespace OffWorkCountdown
                     work.Right + WindowMargin);
                 anchorTop = dockEdge == DockEdge.Top
                     ? work.Top - WindowMargin
-                    : work.Bottom - cardHeight - WindowMargin;
+                    : screen.Bottom - cardHeight - WindowMargin;
             }
 
             ApplyAnchor();
@@ -1216,9 +1819,10 @@ namespace OffWorkCountdown
 
         private void GetDockPosition(bool hidden, out double left, out double top)
         {
-            double cardWidth = surface.Width;
-            double cardHeight = surface.Height;
+            double cardWidth = card != null && card.ActualWidth > 0 ? card.ActualWidth : surface.Width;
+            double cardHeight = card != null && card.ActualHeight > 0 ? card.ActualHeight : surface.Height;
             Rect work = WorkAreaForCard(anchorRight, anchorTop, cardWidth, cardHeight);
+            Rect screen = ScreenBoundsForCard(anchorRight, anchorTop, cardWidth, cardHeight);
             double right = anchorRight;
             double topAnchor = anchorTop;
 
@@ -1241,8 +1845,8 @@ namespace OffWorkCountdown
                     break;
                 case DockEdge.Bottom:
                     topAnchor = hidden
-                        ? work.Bottom - DockSliver - WindowMargin
-                        : work.Bottom - cardHeight - WindowMargin;
+                        ? screen.Bottom - DockSliver - WindowMargin
+                        : screen.Bottom - cardHeight - WindowMargin;
                     break;
             }
 
@@ -1255,6 +1859,7 @@ namespace OffWorkCountdown
         {
             if (dockEdge == DockEdge.None) return;
             dockedHidden = true;
+            UpdateDockClip();
             CancelDockHide();
             double left;
             double top;
@@ -1266,11 +1871,28 @@ namespace OffWorkCountdown
         {
             if (dockEdge == DockEdge.None) return;
             dockedHidden = false;
+            if (surface != null) surface.Clip = null;
             CancelDockHide();
             double left;
             double top;
             GetDockPosition(false, out left, out top);
             StartDockSlide(left, top);
+        }
+
+        // 底部隐藏时只保留工作区上沿的 6px 把手，卡片其余部分不绘制，
+        // 避免置顶窗口的卡片遮住 Windows 任务栏。
+        private void UpdateDockClip()
+        {
+            if (surface == null) return;
+            if (dockedHidden && dockEdge == DockEdge.Bottom)
+            {
+                surface.Clip = new RectangleGeometry(
+                    new Rect(0, 0, Math.Max(0, surface.Width), DockSliver));
+            }
+            else
+            {
+                surface.Clip = null;
+            }
         }
 
         private void StartDockSlide(double targetLeft, double targetTop)
@@ -1318,6 +1940,7 @@ namespace OffWorkCountdown
         private void ScheduleDockHide()
         {
             if (dockEdge == DockEdge.None || dockedHidden || settingsOpen || dragInProgress) return;
+            if (offWorkRevealUntil.HasValue) return;
             if (card != null && card.ContextMenu != null && card.ContextMenu.IsOpen) return;
             if (dockHideTimer == null) return;
             dockHideTimer.Stop();
@@ -1333,6 +1956,7 @@ namespace OffWorkCountdown
         {
             dockHideTimer.Stop();
             if (dockEdge == DockEdge.None || dockedHidden || settingsOpen || dragInProgress) return;
+            if (offWorkRevealUntil.HasValue) return;
             if (card != null && card.ContextMenu != null && card.ContextMenu.IsOpen) return;
             if (card != null && card.IsMouseOver) return;
             HideToDock();
@@ -1395,9 +2019,11 @@ namespace OffWorkCountdown
             dragInProgress = true;
             CancelDockHide();
             StopDockSlide();
+            StopOffWorkReminder();
             // 一旦开始拖动就先离开贴边状态，松手后再重新判断落在哪一侧。
             dockEdge = DockEdge.None;
             dockedHidden = false;
+            if (surface != null) surface.Clip = null;
             if (wasCollapsed) Mouse.Capture(null);
             try
             {
@@ -1413,13 +2039,14 @@ namespace OffWorkCountdown
             anchorTop = Top;
             hasCustomPosition = true;
 
-            double cardWidth = surface.Width;
-            double cardHeight = surface.Height;
+            double cardWidth = card != null && card.ActualWidth > 0 ? card.ActualWidth : surface.Width;
+            double cardHeight = card != null && card.ActualHeight > 0 ? card.ActualHeight : surface.Height;
             Rect work = WorkAreaForCard(anchorRight, anchorTop, cardWidth, cardHeight);
-            DockEdge edge = FindDockEdge(work);
+            Rect screen = ScreenBoundsForCard(anchorRight, anchorTop, cardWidth, cardHeight);
+            DockEdge edge = FindDockEdge(work, screen);
             if (edge != DockEdge.None)
             {
-                DockAt(edge, work);
+                DockAt(edge, work, screen);
             }
             else
             {
@@ -1467,7 +2094,6 @@ namespace OffWorkCountdown
         private void ShowCountdown()
         {
             settingsOpen = false;
-            focusSettingsAfterTransition = false;
             RefreshUi();
             SwitchView(countdownView, ExpandedWidth, countdownCardHeight);
         }
@@ -1475,36 +2101,99 @@ namespace OffWorkCountdown
         private void ShowSettings()
         {
             settingsOpen = true;
+            suppressSettingsApply = true;
+            if (soundToggle != null) soundToggle.IsChecked = settings.SoundEnabled;
+            if (autoStartToggle != null) autoStartToggle.IsChecked = IsAutoStartEnabled();
             startBox.Text = settings.StartTime;
             endBox.Text = settings.EndTime;
+            suppressSettingsApply = false;
+            UpdateLanguageSegments();
             ResetSettingsMessage();
             if (currentView == settingsView)
             {
-                FocusSettingsStart();
                 return;
             }
-            focusSettingsAfterTransition = true;
             SwitchView(settingsView, ExpandedWidth, settingsCardHeight);
+        }
+
+        private void ApplyLanguage()
+        {
+            FontFamily = IsEnglish ? PickEnglishFont() : PickChineseFont();
+            countdownText.FontFamily = PickEnglishFont();
+            collapsedTime.FontFamily = PickEnglishFont();
+            startBox.FontFamily = PickEnglishFont();
+            endBox.FontFamily = PickEnglishFont();
+            footerTimeRun.FontFamily = PickEnglishFont();
+            footerRightText.FontFamily = PickEnglishFont();
+
+            doneText.Text = L("今天辛苦了。", "Good work today.");
+
+            ToolTipService.SetToolTip(settingsButton, L("设置", "Settings"));
+            AutomationProperties.SetName(settingsButton, L("设置", "Settings"));
+            ToolTipService.SetToolTip(collapseButton, L("收起", "Collapse"));
+            AutomationProperties.SetName(collapseButton, L("收起", "Collapse"));
+
+            ToolTipService.SetToolTip(
+                collapsedView,
+                L("拖动调整位置，点击展开", "Drag to move, click to expand"));
+            AutomationProperties.SetName(
+                collapsedView,
+                L("展开下班倒计时", "Expand countdown"));
+
+            settingsTitle.Text = L("倒计时设置", "Countdown settings");
+            startFieldLabel.Text = L("上班时间", "Start time");
+            endFieldLabel.Text = L("下班时间", "End time");
+            AutomationProperties.SetName(startBox, L("上班时间", "Start time"));
+            AutomationProperties.SetName(endBox, L("下班时间", "End time"));
+            soundLabel.Text = L("下班提醒音", "End-of-day sound");
+            AutomationProperties.SetName(
+                soundToggle,
+                L("开启下班提醒音", "Enable end-of-day sound"));
+            autoStartLabel.Text = L("开机自启", "Start with Windows");
+            AutomationProperties.SetName(
+                autoStartToggle,
+                L("开机自启开关", "Start with Windows toggle"));
+            languageLabel.Text = L("语言", "Language");
+            UpdateLanguageSegments();
+            ToolTipService.SetToolTip(closeSettingsButton, L("关闭设置", "Close settings"));
+            AutomationProperties.SetName(closeSettingsButton, L("关闭设置", "Close settings"));
+
+            contextSettingsItem.Header = L("设置", "Settings");
+            contextHideItem.Header = L("隐藏窗口", "Hide window");
+            contextExitItem.Header = L("退出", "Exit");
+            if (traySettingsItem != null) traySettingsItem.Text = L("设置", "Settings");
+            if (trayExitItem != null) trayExitItem.Text = L("退出", "Exit");
+            UpdateTrayToggleText();
+
+            MeasureCardHeights();
+            double maxCardHeight = Math.Max(
+                countdownCardHeight,
+                Math.Max(settingsCardHeight, collapsedCardHeight));
+            Width = ExpandedWidth + WindowMargin * 2;
+            Height = maxCardHeight + WindowMargin * 2 + SettingsErrorAllowance;
+            surface.Width = currentView == collapsedView ? CollapsedWidth : ExpandedWidth;
+            surface.Height = currentView == settingsView
+                ? settingsCardHeight
+                : (currentView == collapsedView ? collapsedCardHeight : countdownCardHeight);
+            if (dockEdge != DockEdge.None)
+            {
+                StopDockSlide();
+                RepositionDockedView();
+            }
+            else
+            {
+                ClampAnchor();
+                ApplyAnchor();
+            }
+
+            RefreshUi();
         }
 
         private void Collapse()
         {
             settingsOpen = false;
-            focusSettingsAfterTransition = false;
             RefreshUi();
             SwitchView(collapsedView, CollapsedWidth, collapsedCardHeight);
-        }
-
-        private void FocusSettingsStart()
-        {
-            Dispatcher.BeginInvoke(
-                DispatcherPriority.Input,
-                new Action(delegate
-                {
-                    if (settingsView.Visibility != Visibility.Visible) return;
-                    startBox.Focus();
-                    startBox.SelectAll();
-                }));
         }
 
         private void MeasureCardHeights()
@@ -1574,19 +2263,15 @@ namespace OffWorkCountdown
             }
             UpdateProgressWidth();
             ScheduleDockHide();
-
-            if (focusSettingsAfterTransition && target == settingsView)
-            {
-                focusSettingsAfterTransition = false;
-                FocusSettingsStart();
-            }
         }
 
         private void OnSettingsKeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Enter)
             {
-                SaveSettings();
+                NormalizeTimeBox(startBox);
+                NormalizeTimeBox(endBox);
+                ApplyTimeSettings();
                 e.Handled = true;
             }
             else if (e.Key == Key.Escape)
@@ -1596,63 +2281,166 @@ namespace OffWorkCountdown
             }
         }
 
-        private void ResetSettings()
+        private void ApplyTimeSettings()
         {
-            startBox.Text = CountdownSettings.DefaultStart;
-            endBox.Text = CountdownSettings.DefaultEnd;
-            ResetSettingsMessage();
-            startBox.Focus();
-            startBox.SelectAll();
-        }
+            if (!settingsOpen) return;
 
-        private void SaveSettings()
-        {
             string startText;
             string endText;
             TimeSpan start;
             TimeSpan end;
-            if (!CountdownSettings.TryNormalizeTime(startBox.Text, out startText, out start))
+            if (!CountdownSettings.TryParseFlexibleTime(startBox.Text, out startText, out start))
             {
-                ShowSettingsError("上班时间格式应为 HH:mm");
+                ShowSettingsError(L(
+                    "上班时间格式不对",
+                    "Invalid start time"));
                 startBox.Focus();
                 startBox.SelectAll();
                 return;
             }
-            if (!CountdownSettings.TryNormalizeTime(endBox.Text, out endText, out end))
+            if (!CountdownSettings.TryParseFlexibleTime(endBox.Text, out endText, out end))
             {
-                ShowSettingsError("下班时间格式应为 HH:mm");
+                ShowSettingsError(L(
+                    "下班时间格式不对",
+                    "Invalid end time"));
                 endBox.Focus();
                 endBox.SelectAll();
                 return;
             }
             if (end <= start)
             {
-                ShowSettingsError("下班时间需要晚于上班时间");
+                ShowSettingsError(L(
+                    "下班时间需要晚于上班时间",
+                    "End must be after start"));
                 endBox.Focus();
                 endBox.SelectAll();
                 return;
             }
 
+            startBox.Text = startText;
+            endBox.Text = endText;
             settings.StartTime = startText;
             settings.EndTime = endText;
             workStart = start;
             workEnd = end;
-            ResetSettingsMessage();
             SettingsStore.Save(settings);
-            ShowCountdown();
+            ResetSettingsMessage();
+            RefreshUi();
+        }
+
+        private void ApplyStepperTime(bool endField)
+        {
+            if (!settingsOpen) return;
+
+            string startText;
+            string endText;
+            TimeSpan start;
+            TimeSpan end;
+
+            if (endField)
+            {
+                if (!CountdownSettings.TryParseFlexibleTime(endBox.Text, out endText, out end))
+                {
+                    ShowSettingsError(L("下班时间格式不对", "Invalid end time"));
+                    endBox.Focus();
+                    endBox.SelectAll();
+                    return;
+                }
+                if (!CountdownSettings.TryParseFlexibleTime(startBox.Text, out startText, out start))
+                {
+                    startText = settings.StartTime;
+                    if (!CountdownSettings.TryParseFlexibleTime(startText, out startText, out start))
+                    {
+                        startText = CountdownSettings.DefaultStart;
+                        CountdownSettings.TryParseFlexibleTime(startText, out startText, out start);
+                    }
+                    startBox.Text = startText;
+                }
+            }
+            else
+            {
+                if (!CountdownSettings.TryParseFlexibleTime(startBox.Text, out startText, out start))
+                {
+                    ShowSettingsError(L("上班时间格式不对", "Invalid start time"));
+                    startBox.Focus();
+                    startBox.SelectAll();
+                    return;
+                }
+                if (!CountdownSettings.TryParseFlexibleTime(endBox.Text, out endText, out end))
+                {
+                    endText = settings.EndTime;
+                    if (!CountdownSettings.TryParseFlexibleTime(endText, out endText, out end))
+                    {
+                        endText = CountdownSettings.DefaultEnd;
+                        CountdownSettings.TryParseFlexibleTime(endText, out endText, out end);
+                    }
+                    endBox.Text = endText;
+                }
+            }
+
+            if (end <= start)
+            {
+                ShowSettingsError(L("下班时间需要晚于上班时间", "End must be after start"));
+                endBox.Focus();
+                endBox.SelectAll();
+                return;
+            }
+
+            startBox.Text = startText;
+            endBox.Text = endText;
+            settings.StartTime = startText;
+            settings.EndTime = endText;
+            workStart = start;
+            workEnd = end;
+            SettingsStore.Save(settings);
+            ResetSettingsMessage();
+            RefreshUi();
         }
 
         private void ShowSettingsError(string message)
         {
+            bool wasVisible = settingsError.Visibility == Visibility.Visible;
             settingsError.Text = message;
             settingsError.Foreground = Danger;
+            settingsError.MinHeight = 16;
+            settingsError.Visibility = Visibility.Visible;
+            if (!wasVisible) UpdateSettingsCardHeight();
         }
 
         private void ResetSettingsMessage()
         {
             if (settingsError == null) return;
-            settingsError.Text = SettingsHint;
+            bool wasVisible = settingsError.Visibility == Visibility.Visible;
+            settingsError.Text = string.Empty;
             settingsError.Foreground = TextDisabled;
+            settingsError.MinHeight = 0;
+            settingsError.Visibility = Visibility.Collapsed;
+            if (wasVisible) UpdateSettingsCardHeight();
+        }
+
+        private void UpdateSettingsCardHeight()
+        {
+            if (settingsView == null) return;
+            settingsCardHeight = MeasureCardHeight(settingsView, ExpandedWidth);
+            double maxCardHeight = Math.Max(
+                countdownCardHeight,
+                Math.Max(settingsCardHeight, collapsedCardHeight));
+            double targetHeight = maxCardHeight + WindowMargin * 2 + SettingsErrorAllowance;
+            if (Math.Abs(Height - targetHeight) > 0.5) Height = targetHeight;
+            if (currentView == settingsView)
+            {
+                surface.Height = settingsCardHeight;
+            }
+            if (dockEdge != DockEdge.None)
+            {
+                StopDockSlide();
+                RepositionDockedView();
+            }
+            else
+            {
+                ClampAnchor();
+                ApplyAnchor();
+            }
         }
 
         private void RefreshTimeSpans()
@@ -1674,6 +2462,105 @@ namespace OffWorkCountdown
             workEnd = end;
         }
 
+        private void OnWorkEnded()
+        {
+            if (settings.SoundEnabled) PlayChime();
+
+            if (!IsVisible) return;
+            if (dockEdge == DockEdge.None || !dockedHidden) return;
+            if (offWorkRevealUntil.HasValue) return;
+
+            // 贴边隐藏时自动滑出 5 秒提醒下班，然后缩回。
+            offWorkRevealUntil = DateTime.Now.AddSeconds(5);
+            CancelDockHide();
+            RevealDock();
+        }
+
+        private void StopOffWorkReminder()
+        {
+            offWorkRevealUntil = null;
+        }
+
+        private void PlayChime()
+        {
+            try
+            {
+                if (chimePlayer == null)
+                {
+                    chimeStream = BuildChimeStream();
+                    chimePlayer = new SoundPlayer(chimeStream);
+                    chimePlayer.Load();
+                }
+                chimePlayer.Play();
+            }
+            catch
+            {
+                // 没有音频设备时静默失败
+            }
+        }
+
+        private static Stream BuildChimeStream()
+        {
+            const int sampleRate = 44100;
+            const double seconds = 0.85;
+            int sampleCount = (int)(sampleRate * seconds);
+            double[] values = new double[sampleCount];
+            double[] frequencies = new double[] { 880.0, 1174.66 };
+            double[] starts = new double[] { 0.0, 0.16 };
+            double[] amplitudes = new double[] { 0.62, 0.52 };
+
+            double peak = 0.0;
+            for (int i = 0; i < sampleCount; i++)
+            {
+                double time = (double)i / sampleRate;
+                double value = 0.0;
+                for (int n = 0; n < frequencies.Length; n++)
+                {
+                    double local = time - starts[n];
+                    if (local < 0) continue;
+
+                    double attack = Math.Min(1.0, local / 0.004);
+                    double decay = Math.Exp(-6.5 * local);
+                    value += amplitudes[n] * attack * decay * (
+                        Math.Sin(2.0 * Math.PI * frequencies[n] * local) +
+                        0.28 * Math.Exp(-3.5 * local) *
+                            Math.Sin(2.0 * Math.PI * frequencies[n] * 2.01 * local));
+                }
+                values[i] = value;
+                if (Math.Abs(value) > peak) peak = Math.Abs(value);
+            }
+
+            double scale = peak > 0.0 ? 0.72 / peak : 1.0;
+            MemoryStream stream = new MemoryStream();
+            BinaryWriter writer = new BinaryWriter(stream);
+
+            int dataSize = sampleCount * 2;
+            writer.Write(Encoding.ASCII.GetBytes("RIFF"));
+            writer.Write(36 + dataSize);
+            writer.Write(Encoding.ASCII.GetBytes("WAVE"));
+            writer.Write(Encoding.ASCII.GetBytes("fmt "));
+            writer.Write(16);
+            writer.Write((short)1);
+            writer.Write((short)1);
+            writer.Write(sampleRate);
+            writer.Write(sampleRate * 2);
+            writer.Write((short)2);
+            writer.Write((short)16);
+            writer.Write(Encoding.ASCII.GetBytes("data"));
+            writer.Write(dataSize);
+            for (int i = 0; i < sampleCount; i++)
+            {
+                double sample = values[i] * scale;
+                if (sample > 1.0) sample = 1.0;
+                if (sample < -1.0) sample = -1.0;
+                writer.Write((short)Math.Round(sample * 32767.0));
+            }
+
+            writer.Flush();
+            stream.Position = 0;
+            return stream;
+        }
+
         #endregion
 
         #region 刷新与绘制
@@ -1684,6 +2571,8 @@ namespace OffWorkCountdown
             DateTime endAt = now.Date.Add(workEnd);
             DateTime startAt = now.Date.Add(workStart);
             bool working = now < endAt;
+            bool previousWorking = lastWorking.HasValue ? lastWorking.Value : working;
+            bool workJustEnded = previousWorking && !working;
 
             TimeSpan remaining = working ? endAt - now : TimeSpan.Zero;
             string countdown = FormatCountdown(remaining);
@@ -1711,20 +2600,21 @@ namespace OffWorkCountdown
                 lastWorking = working;
             }
 
-            statusLabel.Text = working ? "距离下班" : "已下班";
+            statusLabel.Text = working ? L("距离下班", "Until off work") : L("已下班", "Off work");
             statusLabel.Foreground = working ? TextSecondary : Success;
             countdownText.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
             doneText.Visibility = working ? Visibility.Collapsed : Visibility.Visible;
             if (countdownText.Text != countdown) countdownText.Text = countdown;
-            footerLeftText.Text = working
-                ? "下班时间 " + settings.EndTime
-                : "明天 " + settings.EndTime;
+            footerCaptionRun.Text = working
+                ? L("下班时间 ", "Off at ")
+                : L("明天 ", "Tomorrow ");
+            footerTimeRun.Text = settings.EndTime;
             footerRightText.Text = percent + "%";
-            progressFill.Background = working ? TextPrimary : Success;
+            progressFill.Background = working ? ProgressFill : Success;
 
-            collapsedLabel.Text = working ? "距离下班" : "已下班";
+            collapsedLabel.Text = working ? L("距离下班", "Time left") : L("已下班", "Off work");
             collapsedLabel.Foreground = working ? TextSecondary : Success;
-            collapsedTime.Text = working ? countdown : "明天见";
+            collapsedTime.Text = working ? countdown : L("明天见", "Tomorrow");
             collapsedTime.Foreground = working ? TextPrimary : Success;
 
             UpdateProgressWidth();
@@ -1732,9 +2622,33 @@ namespace OffWorkCountdown
             if (tray != null)
             {
                 string tip = working
-                    ? "距下班 " + countdown
-                    : "已下班，明天 " + settings.EndTime;
+                    ? L("距下班 ", "Time left ") + countdown
+                    : L("已下班，明天 ", "Off work, tomorrow ") + settings.EndTime;
                 if (tray.Text != tip) tray.Text = tip;
+            }
+
+            if (workJustEnded)
+            {
+                DateTime endMoment = now.Date.Add(workEnd);
+                if (lastReminderEnd != endMoment)
+                {
+                    lastReminderEnd = endMoment;
+                    OnWorkEnded();
+                }
+            }
+
+            if (offWorkRevealUntil.HasValue && now >= offWorkRevealUntil.Value)
+            {
+                offWorkRevealUntil = null;
+                if (IsVisible &&
+                    dockEdge != DockEdge.None &&
+                    !dockedHidden &&
+                    !settingsOpen &&
+                    !dragInProgress &&
+                    (card == null || !card.IsMouseOver))
+                {
+                    HideToDock();
+                }
             }
         }
 
@@ -1825,6 +2739,51 @@ namespace OffWorkCountdown
             box.Stretch = Stretch.Uniform;
             box.Child = canvas;
             return box;
+        }
+
+        private static FrameworkElement CreateSettingsIcon(Brush brush)
+        {
+            FontFamily iconFont = FindIconFont();
+            if (iconFont == null) return CreateSlidersIcon(16, brush);
+
+            TextBlock glyph = new TextBlock();
+            glyph.Text = "\uE713";
+            glyph.FontFamily = iconFont;
+            glyph.FontSize = 16;
+            glyph.Foreground = brush;
+            glyph.TextAlignment = TextAlignment.Center;
+
+            Viewbox box = new Viewbox();
+            box.Width = 16;
+            box.Height = 16;
+            box.Stretch = Stretch.Uniform;
+            box.Child = glyph;
+            return box;
+        }
+
+        private static FontFamily FindIconFont()
+        {
+            foreach (FontFamily family in Fonts.SystemFontFamilies)
+            {
+                if (string.Equals(
+                        family.Source,
+                        "Segoe Fluent Icons",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return family;
+                }
+            }
+            foreach (FontFamily family in Fonts.SystemFontFamilies)
+            {
+                if (string.Equals(
+                        family.Source,
+                        "Segoe MDL2 Assets",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return family;
+                }
+            }
+            return null;
         }
 
         private static void AddSlider(Canvas canvas, double y, double knobX, Brush stroke)
@@ -1952,6 +2911,156 @@ namespace OffWorkCountdown
             return brush;
         }
 
+        private static Brush MakeCardFill()
+        {
+            LinearGradientBrush brush = new LinearGradientBrush();
+            brush.StartPoint = new Point(0, 0);
+            brush.EndPoint = new Point(1, 1);
+            brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xFD, 0xFE, 0xFF), 0.0));
+            brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF6, 0xFA, 0xFE), 0.55));
+            brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xEF, 0xF5, 0xFC), 1.0));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static Brush MakeCardBorder()
+        {
+            LinearGradientBrush brush = new LinearGradientBrush();
+            brush.StartPoint = new Point(0, 0);
+            brush.EndPoint = new Point(1, 1);
+            brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xFF, 0xFF, 0xFF), 0.0));
+            brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xE2, 0xE9, 0xF2), 0.5));
+            brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xD3, 0xDF, 0xEE), 1.0));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static Brush MakeProgressFill()
+        {
+            LinearGradientBrush brush = new LinearGradientBrush();
+            brush.StartPoint = new Point(0, 0);
+            brush.EndPoint = new Point(1, 0);
+            brush.GradientStops.Add(new GradientStop(Color.FromRgb(0x0F, 0x6C, 0xBD), 0.0));
+            brush.GradientStops.Add(new GradientStop(Color.FromRgb(0x3B, 0x8D, 0xE0), 1.0));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static Brush MakeSheenFill()
+        {
+            LinearGradientBrush brush = new LinearGradientBrush();
+            brush.StartPoint = new Point(0, 0);
+            brush.EndPoint = new Point(0, 1);
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(44, 0xFF, 0xFF, 0xFF), 0.0));
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 0xFF, 0xFF, 0xFF), 1.0));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static Brush MakeSpecularFill()
+        {
+            LinearGradientBrush brush = new LinearGradientBrush();
+            brush.StartPoint = new Point(0, 0);
+            brush.EndPoint = new Point(1, 0);
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 0xFF, 0xFF, 0xFF), 0.0));
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(200, 0xFF, 0xFF, 0xFF), 0.5));
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 0xFF, 0xFF, 0xFF), 1.0));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static FontFamily FindFontFamily(string name)
+        {
+            foreach (FontFamily family in Fonts.SystemFontFamilies)
+            {
+                if (string.Equals(family.Source, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return family;
+                }
+            }
+            return null;
+        }
+
+        private static FontFamily PickFontFamily(string preferred)
+        {
+            return FindFontFamily(preferred) ?? new FontFamily("Segoe UI");
+        }
+
+        private static FontFamily englishFont;
+        private static bool englishFontTried;
+
+        private static FontFamily PickChineseFont()
+        {
+            FontFamily family = FindFontFamily("Microsoft YaHei UI");
+            if (family == null) family = FindFontFamily("Microsoft YaHei");
+            if (family == null) family = FindFontFamily("SimHei");
+            if (family == null) family = FindFontFamily("SimSun");
+            return family ?? PickFontFamily("Segoe UI");
+        }
+
+        private static FontFamily PickEnglishFont()
+        {
+            FontFamily maple = LoadMapleFont();
+            return maple ?? PickFontFamily("Segoe UI Variable Text");
+        }
+
+        private static FontFamily LoadMapleFont()
+        {
+            if (englishFontTried) return englishFont;
+            englishFontTried = true;
+            try
+            {
+                string fontDirectory = IOPath.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "OffWorkCountdown",
+                    "Fonts",
+                    "Maple");
+                System.IO.Directory.CreateDirectory(fontDirectory);
+                WriteEmbeddedResource(
+                    "OffWorkCountdown.Fonts.MapleMono-Regular.ttf",
+                    IOPath.Combine(fontDirectory, "MapleMono-Regular.ttf"));
+                WriteEmbeddedResource(
+                    "OffWorkCountdown.Fonts.MapleMono-Bold.ttf",
+                    IOPath.Combine(fontDirectory, "MapleMono-Bold.ttf"));
+
+                System.Collections.Generic.ICollection<FontFamily> families =
+                    Fonts.GetFontFamilies(fontDirectory);
+                foreach (FontFamily family in families)
+                {
+                    englishFont = family;
+                    break;
+                }
+            }
+            catch
+            {
+                englishFont = null;
+            }
+            return englishFont;
+        }
+
+        private static void WriteEmbeddedResource(string resourceName, string targetFile)
+        {
+            System.Reflection.Assembly assembly =
+                System.Reflection.Assembly.GetExecutingAssembly();
+            using (System.IO.Stream stream = assembly.GetManifestResourceStream(resourceName))
+            {
+                if (stream == null) return;
+                byte[] bytes = new byte[stream.Length];
+                int offset = 0;
+                while (offset < bytes.Length)
+                {
+                    int read = stream.Read(bytes, offset, bytes.Length - offset);
+                    if (read <= 0) break;
+                    offset += read;
+                }
+                if (!System.IO.File.Exists(targetFile) ||
+                    new System.IO.FileInfo(targetFile).Length != bytes.Length)
+                {
+                    System.IO.File.WriteAllBytes(targetFile, bytes);
+                }
+            }
+        }
+
         private static IntPtr CreateTrayIconHandle()
         {
             try
@@ -1966,7 +3075,7 @@ namespace OffWorkCountdown
                         graphics.SmoothingMode = Drawing2D.SmoothingMode.AntiAlias;
                         graphics.Clear(Drawing.Color.Transparent);
                         using (Drawing.SolidBrush circleBrush = new Drawing.SolidBrush(
-                            Drawing.Color.FromArgb(255, 5, 112, 238)))
+                            Drawing.Color.FromArgb(255, 15, 108, 189)))
                         {
                             graphics.FillEllipse(circleBrush, 1, 1, 30, 30);
                         }
@@ -1996,6 +3105,23 @@ namespace OffWorkCountdown
             timer.Stop();
             if (dockSlideTimer != null) dockSlideTimer.Stop();
             if (dockHideTimer != null) dockHideTimer.Stop();
+            if (chimePlayer != null)
+            {
+                try
+                {
+                    chimePlayer.Stop();
+                    chimePlayer.Dispose();
+                }
+                catch
+                {
+                }
+                chimePlayer = null;
+            }
+            if (chimeStream != null)
+            {
+                chimeStream.Dispose();
+                chimeStream = null;
+            }
             if (tray != null)
             {
                 tray.Visible = false;
