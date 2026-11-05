@@ -138,6 +138,11 @@ if (Test-Path -LiteralPath $oceanPath) {
     $cscArgs += "/resource:$oceanPath,Ocean.ps"
 }
 
+$framesPath = Join-Path $assets 'ocean-frames.jpg'
+if (Test-Path -LiteralPath $framesPath) {
+    $cscArgs += "/resource:$framesPath,OceanFrames.jpg"
+}
+
 $cscArgs += $src
 
 & $csc $cscArgs

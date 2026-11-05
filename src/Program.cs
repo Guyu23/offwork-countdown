@@ -284,6 +284,7 @@ namespace OffWorkCountdown
         private Rectangle auroraRect;
         private bool auroraActive = true;
         private OceanEffect oceanEffect;
+        private OceanFilm oceanFilm;
         private Rectangle oceanRect;
         private string backdropMode = "aurora";
         private double auroraPhase;
@@ -501,6 +502,11 @@ namespace OffWorkCountdown
                 auroraLast = -1.0;
                 CompositionTarget.Rendering += OnAuroraFrame;
             }
+            if (oceanFilm != null)
+            {
+                oceanFilm.Paused = backdropMode != "ocean" || !SystemParameters.ClientAreaAnimation;
+                oceanFilm.Start();
+            }
             IsVisibleChanged += OnAuroraVisibilityChanged;
         }
 
@@ -527,21 +533,23 @@ namespace OffWorkCountdown
             if (delta > 0.12) delta = 0.12;
             auroraLast = now;
             auroraPhase += delta;
-            if (backdropMode == "ocean" && oceanEffect != null) oceanEffect.Time = auroraPhase;
+            if (backdropMode == "ocean" && oceanEffect != null && !OceanFilm.IsAvailable) oceanEffect.Time = auroraPhase;
             else if (auroraEffect != null) auroraEffect.Time = auroraPhase;
         }
 
         private void OnAuroraVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
             auroraLast = -1.0;
+            if (oceanFilm != null) oceanFilm.Paused = backdropMode != "ocean" || !SystemParameters.ClientAreaAnimation;
         }
 
         private static string NormalizeBackdrop(string mode)
         {
+            bool oceanReady = OceanFilm.IsAvailable || OceanEffect.IsAvailable;
             if (mode == "none") return "none";
-            if (mode == "ocean") return OceanEffect.IsAvailable ? "ocean" : (AuroraEffect.IsAvailable ? "aurora" : "none");
-            if (mode == "aurora") return AuroraEffect.IsAvailable ? "aurora" : (OceanEffect.IsAvailable ? "ocean" : "none");
-            return AuroraEffect.IsAvailable ? "aurora" : (OceanEffect.IsAvailable ? "ocean" : "none");
+            if (mode == "ocean") return oceanReady ? "ocean" : (AuroraEffect.IsAvailable ? "aurora" : "none");
+            if (mode == "aurora") return AuroraEffect.IsAvailable ? "aurora" : (oceanReady ? "ocean" : "none");
+            return AuroraEffect.IsAvailable ? "aurora" : (oceanReady ? "ocean" : "none");
         }
 
         private void ApplyBackdropTheme()
@@ -1007,9 +1015,17 @@ namespace OffWorkCountdown
                 contentHost.Children.Add(oceanRect);
             }
 
+            oceanFilm = new OceanFilm();
+            if (OceanFilm.IsAvailable)
+            {
+                oceanFilm.Visibility = Visibility.Collapsed;
+                contentHost.Children.Add(oceanFilm);
+            }
+
             if (auroraRect != null) auroraRect.Visibility = backdropMode == "aurora" ? Visibility.Visible : Visibility.Collapsed;
-            if (oceanRect != null) oceanRect.Visibility = backdropMode == "ocean" ? Visibility.Visible : Visibility.Collapsed;
-            auroraActive = backdropMode != "none";
+            if (oceanRect != null) oceanRect.Visibility = (backdropMode == "ocean" && !OceanFilm.IsAvailable) ? Visibility.Visible : Visibility.Collapsed;
+            auroraActive = backdropMode == "aurora" || (backdropMode == "ocean" && !OceanFilm.IsAvailable);
+            if (oceanFilm != null) oceanFilm.Visibility = backdropMode == "ocean" ? Visibility.Visible : Visibility.Collapsed;
 
             sheenRect = new Rectangle();
             sheenRect.Height = 46;
@@ -1410,8 +1426,15 @@ namespace OffWorkCountdown
             settings.Background = normalized;
             SettingsStore.Save(settings);
             if (auroraRect != null) auroraRect.Visibility = normalized == "aurora" ? Visibility.Visible : Visibility.Collapsed;
-            if (oceanRect != null) oceanRect.Visibility = normalized == "ocean" ? Visibility.Visible : Visibility.Collapsed;
-            auroraActive = normalized != "none";
+            if (oceanRect != null) oceanRect.Visibility = (normalized == "ocean" && !OceanFilm.IsAvailable) ? Visibility.Visible : Visibility.Collapsed;
+            auroraActive = normalized == "aurora" || (normalized == "ocean" && !OceanFilm.IsAvailable);
+            if (oceanFilm != null)
+            {
+                bool filmMode = normalized == "ocean" && OceanFilm.IsAvailable;
+                oceanFilm.Visibility = filmMode ? Visibility.Visible : Visibility.Collapsed;
+                oceanFilm.Paused = !filmMode || !SystemParameters.ClientAreaAnimation;
+                if (filmMode) oceanFilm.Start();
+            }
             ApplyBackdropTheme();
             UpdateBackdropSegments();
         }
@@ -4210,6 +4233,139 @@ namespace OffWorkCountdown
                 PixelShader shader = new PixelShader();
                 shader.SetStreamSource(stream);
                 return shader;
+            }
+        }
+    }
+    /// <summary>
+    /// 由原版 Imposter Syndrome shader 离线渲染的 120 帧日落海面循环。
+    /// 原始 shader 是多 pass/大体积，WPF 单 pass 无法直接运行，这里播放其渲染帧。
+    /// </summary>
+    internal sealed class OceanFilm : FrameworkElement
+    {
+        private const int FrameWidth = 375;
+        private const int FrameHeight = 182;
+        private const int Columns = 10;
+        private const int Rows = 12;
+        private const int FrameCount = 120;
+        private const double FrameSeconds = 1.0 / 12.0;
+
+        private static readonly BitmapImage Sheet = LoadSheet();
+        private static readonly Brush ScrimLeft = CreateScrimLeft();
+        private static readonly Brush ScrimTop = CreateScrimTop();
+
+        private int frame;
+        private int direction = 1;
+        private double lastSeconds = -1.0;
+        private bool hooked;
+
+        public bool Paused { get; set; }
+
+        public static bool IsAvailable
+        {
+            get { return Sheet != null; }
+        }
+
+        public OceanFilm()
+        {
+            IsHitTestVisible = false;
+            SnapsToDevicePixels = false;
+            RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.HighQuality);
+            if (!SystemParameters.ClientAreaAnimation) Paused = true;
+        }
+
+        public void Start()
+        {
+            if (hooked) return;
+            hooked = true;
+            lastSeconds = -1.0;
+            CompositionTarget.Rendering += OnFrame;
+            InvalidateVisual();
+        }
+
+        private void OnFrame(object sender, EventArgs e)
+        {
+            if (Paused || !IsVisible || Sheet == null) return;
+            RenderingEventArgs args = e as RenderingEventArgs;
+            if (args == null) return;
+            double now = args.RenderingTime.TotalSeconds;
+            if (lastSeconds < 0.0)
+            {
+                lastSeconds = now;
+                return;
+            }
+            if (now - lastSeconds < FrameSeconds - 0.002) return;
+            lastSeconds = now;
+
+            frame += direction;
+            if (frame > FrameCount - 1)
+            {
+                frame = FrameCount - 2;
+                direction = -1;
+            }
+            else if (frame < 0)
+            {
+                frame = 1;
+                direction = 1;
+            }
+            InvalidateVisual();
+        }
+
+        protected override void OnRender(DrawingContext dc)
+        {
+            if (Sheet == null) return;
+            int column = frame % Columns;
+            int row = frame / Columns;
+            CroppedBitmap cropped = new CroppedBitmap(
+                Sheet,
+                new Int32Rect(
+                    column * FrameWidth,
+                    row * FrameHeight,
+                    FrameWidth,
+                    FrameHeight));
+            cropped.Freeze();
+            Rect area = new Rect(0.0, 0.0, ActualWidth, ActualHeight);
+            dc.DrawImage(cropped, area);
+            dc.DrawRectangle(ScrimLeft, null, area);
+            dc.DrawRectangle(ScrimTop, null, area);
+        }
+
+        private static Brush CreateScrimLeft()
+        {
+            LinearGradientBrush brush = new LinearGradientBrush();
+            brush.StartPoint = new Point(0.0, 0.0);
+            brush.EndPoint = new Point(1.0, 0.0);
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(122, 0, 0, 0), 0.0));
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(77, 0, 0, 0), 0.45));
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(26, 0, 0, 0), 0.72));
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 0, 0, 0), 0.86));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static Brush CreateScrimTop()
+        {
+            LinearGradientBrush brush = new LinearGradientBrush();
+            brush.StartPoint = new Point(0.0, 0.0);
+            brush.EndPoint = new Point(0.0, 1.0);
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(61, 0, 0, 0), 0.0));
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 0, 0, 0), 0.30));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static BitmapImage LoadSheet()
+        {
+            Stream stream = typeof(OceanFilm).Assembly.GetManifestResourceStream("OceanFrames.jpg");
+            if (stream == null) return null;
+            using (stream)
+            {
+                BitmapImage image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.StreamSource = stream;
+                image.EndInit();
+                image.Freeze();
+                return image;
             }
         }
     }
