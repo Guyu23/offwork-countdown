@@ -254,6 +254,7 @@ namespace OffWorkCountdown
         private static readonly SolidColorBrush Track = MakeBrush(0xE8, 0xED, 0xF4);
         private static readonly SolidColorBrush StepperFill = MakeBrush(0xEA, 0xEF, 0xF6);
         private static readonly SolidColorBrush StepperLine = MakeBrush(0xD5, 0xDE, 0xE9);
+        private static readonly SolidColorBrush OvernightBadgeFill = MakeBrush(0xE8, 0xF1, 0xFB);
         private static readonly SolidColorBrush Brand = MakeBrush(0x0F, 0x6C, 0xBD);
         private static readonly SolidColorBrush BrandHover = MakeBrush(0x11, 0x5E, 0xA3);
         private static readonly SolidColorBrush BrandPressed = MakeBrush(0x0C, 0x4A, 0x8A);
@@ -349,6 +350,8 @@ namespace OffWorkCountdown
         private TextBlock settingsTitle;
         private TextBlock startFieldLabel;
         private TextBlock endFieldLabel;
+        private Border endFieldBadge;
+        private TextBlock endFieldBadgeText;
         private TextBlock soundLabel;
         private TextBlock autoStartLabel;
         private TextBlock languageLabel;
@@ -738,6 +741,7 @@ namespace OffWorkCountdown
             footerRightText = MakeText("100%", 13, FontWeights.Normal, TextSecondary);
             footerRightText.FontFamily = PickEnglishFont();
             footerRightText.HorizontalAlignment = HorizontalAlignment.Right;
+            footerRightText.Margin = new Thickness(0, 0, 2, 0);
             footer.Children.Add(footerLeftText);
             footer.Children.Add(footerRightText);
             view.Children.Add(footer);
@@ -786,9 +790,15 @@ namespace OffWorkCountdown
             startField.Children.Add(startBorder);
 
             StackPanel endField = new StackPanel();
-            endField.Margin = new Thickness(10, 0, 0, 0);
+            endField.Margin = new Thickness(10, 0, 4, 0);
             endFieldLabel = MakeText(L("下班时间", "End time"), 12.5, FontWeights.Normal, TextSecondary);
-            endField.Children.Add(endFieldLabel);
+            StackPanel endLabelRow = new StackPanel();
+            endLabelRow.Orientation = Orientation.Horizontal;
+            endLabelRow.Children.Add(endFieldLabel);
+            endFieldBadge = CreateOvernightBadge(out endFieldBadgeText);
+            endFieldBadge.Margin = new Thickness(6, 0, 0, 0);
+            endLabelRow.Children.Add(endFieldBadge);
+            endField.Children.Add(endLabelRow);
             endBorder.Margin = new Thickness(0, 5, 0, 0);
             endField.Children.Add(endBorder);
 
@@ -857,7 +867,7 @@ namespace OffWorkCountdown
             view.Children.Add(autoRow);
 
             Grid languageRow = new Grid();
-            languageRow.Margin = new Thickness(0, 8, 0, 0);
+            languageRow.Margin = new Thickness(0, 8, 4, 0);
 
             languageLabel = MakeText(L("语言", "Language"), 12.5, FontWeights.Normal, TextSecondary);
             languageLabel.VerticalAlignment = VerticalAlignment.Center;
@@ -1247,6 +1257,38 @@ namespace OffWorkCountdown
             return button;
         }
 
+        private static Border CreateOvernightBadge(out TextBlock label)
+        {
+            Border badge = new Border();
+            badge.Background = OvernightBadgeFill;
+            badge.CornerRadius = new CornerRadius(8);
+            badge.Height = 18;
+            badge.Padding = new Thickness(7, 0, 7, 0);
+            badge.VerticalAlignment = VerticalAlignment.Center;
+            badge.Visibility = Visibility.Collapsed;
+            label = MakeText("次日", 10.5, FontWeights.Normal, Brand);
+            label.VerticalAlignment = VerticalAlignment.Center;
+            badge.Child = label;
+            return badge;
+        }
+
+        private void UpdateOvernightBadge()
+        {
+            if (endFieldBadge == null || startBox == null || endBox == null) return;
+            if (endFieldBadgeText != null)
+            {
+                endFieldBadgeText.Text = L("次日", "Next day");
+            }
+            string startText;
+            string endText;
+            TimeSpan start;
+            TimeSpan end;
+            bool overnight =
+                CountdownSettings.TryParseFlexibleTime(startBox.Text, out startText, out start) &&
+                CountdownSettings.TryParseFlexibleTime(endBox.Text, out endText, out end) &&
+                end <= start;
+            endFieldBadge.Visibility = overnight ? Visibility.Visible : Visibility.Collapsed;
+        }
         private Border CreateTimeInput(out TextBox input)
         {
             Border shell = new Border();
@@ -1324,7 +1366,11 @@ namespace OffWorkCountdown
                 NormalizeTimeBox(inputBox);
                 ApplyTimeSettings();
             };
-            input.TextChanged += delegate { ResetSettingsMessage(); };
+            input.TextChanged += delegate
+            {
+                ResetSettingsMessage();
+                UpdateOvernightBadge();
+            };
             return shell;
         }
 
@@ -2108,6 +2154,7 @@ namespace OffWorkCountdown
             endBox.Text = settings.EndTime;
             suppressSettingsApply = false;
             UpdateLanguageSegments();
+            UpdateOvernightBadge();
             ResetSettingsMessage();
             if (currentView == settingsView)
             {
@@ -2155,6 +2202,7 @@ namespace OffWorkCountdown
                 L("开机自启开关", "Start with Windows toggle"));
             languageLabel.Text = L("语言", "Language");
             UpdateLanguageSegments();
+            UpdateOvernightBadge();
             ToolTipService.SetToolTip(closeSettingsButton, L("关闭设置", "Close settings"));
             AutomationProperties.SetName(closeSettingsButton, L("关闭设置", "Close settings"));
 
@@ -2307,15 +2355,7 @@ namespace OffWorkCountdown
                 endBox.SelectAll();
                 return;
             }
-            if (end <= start)
-            {
-                ShowSettingsError(L(
-                    "下班时间需要晚于上班时间",
-                    "End must be after start"));
-                endBox.Focus();
-                endBox.SelectAll();
-                return;
-            }
+
 
             startBox.Text = startText;
             endBox.Text = endText;
@@ -2378,13 +2418,7 @@ namespace OffWorkCountdown
                 }
             }
 
-            if (end <= start)
-            {
-                ShowSettingsError(L("下班时间需要晚于上班时间", "End must be after start"));
-                endBox.Focus();
-                endBox.SelectAll();
-                return;
-            }
+
 
             startBox.Text = startText;
             endBox.Text = endText;
@@ -2450,8 +2484,7 @@ namespace OffWorkCountdown
             TimeSpan start;
             TimeSpan end;
             if (!CountdownSettings.TryNormalizeTime(settings.StartTime, out startText, out start) ||
-                !CountdownSettings.TryNormalizeTime(settings.EndTime, out endText, out end) ||
-                end <= start)
+                !CountdownSettings.TryNormalizeTime(settings.EndTime, out endText, out end))
             {
                 settings.StartTime = CountdownSettings.DefaultStart;
                 settings.EndTime = CountdownSettings.DefaultEnd;
@@ -2568,9 +2601,35 @@ namespace OffWorkCountdown
         private void RefreshUi()
         {
             DateTime now = DateTime.Now;
-            DateTime endAt = now.Date.Add(workEnd);
-            DateTime startAt = now.Date.Add(workStart);
-            bool working = now < endAt;
+            bool overnight = workEnd <= workStart;
+            DateTime todayStart = now.Date.Add(workStart);
+            DateTime todayEnd = now.Date.Add(workEnd);
+            DateTime startAt;
+            DateTime endAt;
+            bool working;
+            if (overnight)
+            {
+                // 跨天班次：当天 00:00 到下班时间之间仍属于前一天开始的班次；
+                // 下班之后到当天上班前，显示下一班的倒计时（不能提前显示已下班）。
+                if (now < todayEnd)
+                {
+                    startAt = todayStart.AddDays(-1);
+                    endAt = todayEnd;
+                }
+                else
+                {
+                    startAt = todayStart;
+                    endAt = todayEnd.AddDays(1);
+                }
+                working = true;
+            }
+            else
+            {
+                startAt = todayStart;
+                endAt = todayEnd;
+                working = now < endAt;
+            }
+
             bool previousWorking = lastWorking.HasValue ? lastWorking.Value : working;
             bool workJustEnded = previousWorking && !working;
 
