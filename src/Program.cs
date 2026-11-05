@@ -55,6 +55,8 @@ namespace OffWorkCountdown
         [DataMember(Name = "soundEnabled", EmitDefaultValue = false)]
         public bool SoundEnabled { get; set; }
 
+        [DataMember(Name = "background", EmitDefaultValue = false)]
+        public string Background { get; set; }
         [DataMember(Name = "windowRight", EmitDefaultValue = false)]
         public double? WindowRight { get; set; }
 
@@ -66,6 +68,7 @@ namespace OffWorkCountdown
             StartTime = DefaultStart;
             EndTime = DefaultEnd;
             Language = DefaultLanguage;
+            Background = "aurora";
             SoundEnabled = false;
         }
 
@@ -249,6 +252,9 @@ namespace OffWorkCountdown
         private static readonly SolidColorBrush TextPrimary = MakeBrush(0x1B, 0x1F, 0x27);
         private static readonly SolidColorBrush TextSecondary = MakeBrush(0x5F, 0x6B, 0x7A);
         private static readonly SolidColorBrush TextDisabled = MakeBrush(0xA5, 0xAD, 0xB8);
+        private static readonly SolidColorBrush AuroraTextBright = MakeBrush(0xF5, 0xFA, 0xFF);
+        private static readonly SolidColorBrush AuroraTextSoft = MakeBrush(0xD6, 0xE2, 0xF0);
+        private static readonly SolidColorBrush AuroraDone = MakeBrush(0x8C, 0xF0, 0xB2);
         private static readonly SolidColorBrush BorderLine = MakeBrush(0xE1, 0xE7, 0xEF);
         private static readonly SolidColorBrush Surface = MakeBrush(0xFF, 0xFF, 0xFF);
         private static readonly SolidColorBrush SurfaceMuted = MakeBrush(0xF6, 0xF8, 0xFB);
@@ -274,7 +280,18 @@ namespace OffWorkCountdown
 
         private Grid surface;
         private Grid contentHost;
+        private AuroraEffect auroraEffect;
+        private Rectangle auroraRect;
+        private bool auroraActive = true;
+        private OceanEffect oceanEffect;
+        private Rectangle oceanRect;
+        private string backdropMode = "aurora";
+        private double auroraPhase;
+        private double auroraLast = -1.0;
         private Border shadow;
+        private Border nearShadow;
+        private Rectangle sheenRect;
+        private Rectangle specularRect;
         private Border card;
         private StackPanel countdownView;
         private StackPanel settingsView;
@@ -295,6 +312,11 @@ namespace OffWorkCountdown
         private Border progressFill;
         private TextBox startBox;
         private TextBox endBox;
+        private TextBlock backgroundLabel;
+        private Button backgroundNoneButton;
+        private Button backgroundAuroraButton;
+        private Button backgroundOceanButton;
+        private Border backgroundThumb;
 
         private Drawing.Icon trayDrawingIcon;
         private IntPtr trayIconHandle = IntPtr.Zero;
@@ -372,6 +394,8 @@ namespace OffWorkCountdown
         {
             settings = SettingsStore.Load();
             language = settings.Language == "en" ? "en" : "zh";
+            backdropMode = NormalizeBackdrop(settings.Background);
+            settings.Background = backdropMode;
             RefreshTimeSpans();
             RefreshAutoStartPath();
 
@@ -472,6 +496,12 @@ namespace OffWorkCountdown
             ApplyAnchor();
             RefreshUi();
             UpdateTrayToggleText();
+            if ((auroraEffect != null || oceanEffect != null) && (AuroraEffect.IsAvailable || OceanEffect.IsAvailable) && SystemParameters.ClientAreaAnimation)
+            {
+                auroraLast = -1.0;
+                CompositionTarget.Rendering += OnAuroraFrame;
+            }
+            IsVisibleChanged += OnAuroraVisibilityChanged;
         }
 
         private void OnSizeChanged(object sender, SizeChangedEventArgs e)
@@ -479,6 +509,325 @@ namespace OffWorkCountdown
             if (!IsLoaded) return;
             if (anchorReady) ApplyAnchor();
             UpdateProgressWidth();
+        }
+
+        private void OnAuroraFrame(object sender, EventArgs e)
+        {
+            if (!auroraActive || !IsVisible) return;
+            RenderingEventArgs args = e as RenderingEventArgs;
+            if (args == null) return;
+            double now = args.RenderingTime.TotalSeconds;
+            if (auroraLast < 0.0)
+            {
+                auroraLast = now;
+                return;
+            }
+            double delta = now - auroraLast;
+            if (delta < 1.0 / 24.0 - 0.002) return;
+            if (delta > 0.12) delta = 0.12;
+            auroraLast = now;
+            auroraPhase += delta;
+            if (backdropMode == "ocean" && oceanEffect != null) oceanEffect.Time = auroraPhase;
+            else if (auroraEffect != null) auroraEffect.Time = auroraPhase;
+        }
+
+        private void OnAuroraVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            auroraLast = -1.0;
+        }
+
+        private static string NormalizeBackdrop(string mode)
+        {
+            if (mode == "none") return "none";
+            if (mode == "ocean") return OceanEffect.IsAvailable ? "ocean" : (AuroraEffect.IsAvailable ? "aurora" : "none");
+            if (mode == "aurora") return AuroraEffect.IsAvailable ? "aurora" : (OceanEffect.IsAvailable ? "ocean" : "none");
+            return AuroraEffect.IsAvailable ? "aurora" : (OceanEffect.IsAvailable ? "ocean" : "none");
+        }
+
+        private void ApplyBackdropTheme()
+        {
+            bool dark = backdropMode != "none";
+            SolidColorBrush darkCard = new SolidColorBrush(Color.FromRgb(6, 12, 20));
+            darkCard.Freeze();
+            if (card != null)
+            {
+                if (dark)
+                {
+                    card.Background = darkCard;
+                    card.BorderBrush = null;
+                    card.BorderThickness = new Thickness(0);
+                }
+                else
+                {
+                    card.Background = CardFill;
+                    card.BorderBrush = CardBorder;
+                    card.BorderThickness = new Thickness(1);
+                }
+            }
+            if (shadow != null) shadow.Background = dark ? (Brush)darkCard : Surface;
+            if (nearShadow != null) nearShadow.Background = dark ? (Brush)darkCard : Surface;
+            if (sheenRect != null) sheenRect.Visibility = dark ? Visibility.Collapsed : Visibility.Visible;
+            if (specularRect != null) specularRect.Visibility = dark ? Visibility.Collapsed : Visibility.Visible;
+            if (dark)
+            {
+                ApplyAuroraTheme();
+                ApplyAuroraSettingsTheme();
+                ApplyAuroraCollapsedTheme();
+            }
+            else
+            {
+                ApplyLightTheme();
+            }
+            UpdateBackdropSegments();
+        }
+
+        private void ApplyLightTheme()
+        {
+            bool workingNow = !lastWorking.HasValue || lastWorking.Value;
+            Brush stateBrush = workingNow ? (Brush)TextSecondary : Success;
+
+            if (statusLabel != null)
+            {
+                statusLabel.Foreground = stateBrush;
+                statusLabel.FontSize = 13.0;
+                statusLabel.FontWeight = FontWeights.Normal;
+                statusLabel.Effect = null;
+            }
+            if (headerIcon != null)
+            {
+                headerIcon.Width = 16.0;
+                headerIcon.Height = 16.0;
+                headerIcon.Effect = null;
+                headerIcon.Content = workingNow ? (object)CreateClockIcon(16, TextSecondary) : (object)CreateCheckIcon(16, Success);
+            }
+            if (settingsButton != null) settingsButton.Content = CreateSettingsIcon(TextSecondary);
+            if (collapseButton != null) collapseButton.Content = CreateMinusIcon(16, TextSecondary);
+            if (closeSettingsButton != null) closeSettingsButton.Content = CreateCloseIcon(16, TextSecondary);
+            if (countdownText != null)
+            {
+                countdownText.Foreground = TextPrimary;
+                countdownText.Effect = null;
+            }
+            if (doneText != null)
+            {
+                doneText.Foreground = Success;
+                doneText.Effect = null;
+            }
+            if (footerLeftText != null)
+            {
+                footerLeftText.Foreground = TextSecondary;
+                footerLeftText.Effect = null;
+            }
+            if (footerRightText != null)
+            {
+                footerRightText.Foreground = TextSecondary;
+                footerRightText.Effect = null;
+            }
+            if (progressTrack != null && progressTrack.Children.Count > 0)
+            {
+                Border track = progressTrack.Children[0] as Border;
+                if (track != null) track.Background = Track;
+            }
+            if (settingsTitle != null)
+            {
+                settingsTitle.Foreground = TextPrimary;
+                settingsTitle.Effect = null;
+            }
+            TextBlock[] labels = new TextBlock[] {
+                startFieldLabel, endFieldLabel, soundLabel, autoStartLabel, languageLabel, backgroundLabel
+            };
+            for (int i = 0; i < labels.Length; i++)
+            {
+                if (labels[i] == null) continue;
+                labels[i].Foreground = TextSecondary;
+                labels[i].Effect = null;
+            }
+            if (settingsError != null)
+            {
+                settingsError.Foreground = TextDisabled;
+                settingsError.Effect = null;
+            }
+            if (collapsedIcon != null)
+            {
+                collapsedIcon.Width = 16.0;
+                collapsedIcon.Height = 16.0;
+                collapsedIcon.Effect = null;
+                collapsedIcon.Content = workingNow ? (object)CreateClockIcon(16, TextSecondary) : (object)CreateCheckIcon(16, Success);
+            }
+            if (collapsedLabel != null)
+            {
+                collapsedLabel.Foreground = stateBrush;
+                collapsedLabel.FontSize = 12.5;
+                collapsedLabel.Effect = null;
+            }
+            if (collapsedTime != null)
+            {
+                collapsedTime.Foreground = workingNow ? (Brush)TextPrimary : Success;
+                collapsedTime.FontSize = 15.0;
+                collapsedTime.Effect = null;
+            }
+        }
+
+        private void ApplyAuroraTheme()
+        {
+            SolidColorBrush soft = new SolidColorBrush(Color.FromRgb(226, 235, 245));
+            soft.Freeze();
+            SolidColorBrush bright = new SolidColorBrush(Color.FromRgb(248, 251, 255));
+            bright.Freeze();
+            SolidColorBrush done = new SolidColorBrush(Color.FromRgb(140, 240, 178));
+            done.Freeze();
+
+            if (statusLabel != null)
+            {
+                statusLabel.Foreground = Brushes.White;
+                statusLabel.FontSize = 14.0;
+                statusLabel.FontWeight = FontWeights.SemiBold;
+            }
+            bool workingNow = !lastWorking.HasValue || lastWorking.Value;
+            if (headerIcon != null)
+            {
+                headerIcon.Width = 18.0;
+                headerIcon.Height = 18.0;
+                headerIcon.Effect = null;
+                headerIcon.Content = workingNow ? (object)CreateClockIcon(18, Brushes.White) : (object)CreateCheckIcon(18, AuroraDone);
+            }
+            if (settingsButton != null) settingsButton.Content = CreateSettingsIcon(Brushes.White);
+            if (collapseButton != null) collapseButton.Content = CreateMinusIcon(16, Brushes.White);
+
+            if (countdownText != null)
+            {
+                countdownText.Foreground = bright;
+            }
+            if (doneText != null)
+            {
+                doneText.Foreground = done;
+            }
+            if (footerLeftText != null)
+            {
+                footerLeftText.Foreground = soft;
+            }
+            if (footerRightText != null)
+            {
+                footerRightText.Foreground = soft;
+            }
+            if (progressTrack != null && progressTrack.Children.Count > 0)
+            {
+                Border track = progressTrack.Children[0] as Border;
+                if (track != null)
+                {
+                    SolidColorBrush trackBrush = new SolidColorBrush(Color.FromArgb(80, 235, 244, 255));
+                    trackBrush.Freeze();
+                    track.Background = trackBrush;
+                }
+            }
+        }
+
+        private static DropShadowEffect CreateHeaderShadow()
+        {
+            DropShadowEffect shadow = new DropShadowEffect();
+            shadow.Color = Colors.Black;
+            shadow.BlurRadius = 4.0;
+            shadow.ShadowDepth = 1.0;
+            shadow.Direction = 270.0;
+            shadow.Opacity = 0.88;
+            shadow.RenderingBias = RenderingBias.Performance;
+            shadow.Freeze();
+            return shadow;
+        }
+
+        private static DropShadowEffect CreateTextShadow()
+        {
+            DropShadowEffect shadow = new DropShadowEffect();
+            shadow.Color = Colors.Black;
+            shadow.BlurRadius = 8.0;
+            shadow.ShadowDepth = 1.0;
+            shadow.Direction = 270.0;
+            shadow.Opacity = 0.68;
+            shadow.RenderingBias = RenderingBias.Performance;
+            shadow.Freeze();
+            return shadow;
+        }
+
+        private void SetAuroraVisible(bool visible)
+        {
+            if (auroraRect == null) return;
+            auroraActive = visible && IsVisible;
+            double target = visible ? 1.0 : 0.0;
+            if (!SystemParameters.ClientAreaAnimation)
+            {
+                auroraRect.BeginAnimation(UIElement.OpacityProperty, null);
+                auroraRect.Opacity = target;
+                auroraLast = -1.0;
+                return;
+            }
+            DoubleAnimation fade = new DoubleAnimation(
+                auroraRect.Opacity,
+                target,
+                TimeSpan.FromMilliseconds(240));
+            fade.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+            auroraRect.BeginAnimation(UIElement.OpacityProperty, fade);
+            auroraLast = -1.0;
+        }
+
+        private void ApplyAuroraSettingsTheme()
+        {
+            SolidColorBrush bright = new SolidColorBrush(Color.FromRgb(245, 250, 255));
+            bright.Freeze();
+            SolidColorBrush soft = new SolidColorBrush(Color.FromRgb(214, 226, 240));
+            soft.Freeze();
+            SolidColorBrush error = new SolidColorBrush(Color.FromRgb(252, 165, 165));
+            error.Freeze();
+
+            if (settingsTitle != null)
+            {
+                settingsTitle.Foreground = bright;
+            }
+            if (closeSettingsButton != null) closeSettingsButton.Content = CreateCloseIcon(16, bright);
+            if (startFieldLabel != null)
+            {
+                startFieldLabel.Foreground = soft;
+            }
+            if (endFieldLabel != null)
+            {
+                endFieldLabel.Foreground = soft;
+            }
+            if (soundLabel != null)
+            {
+                soundLabel.Foreground = soft;
+            }
+            if (autoStartLabel != null)
+            {
+                autoStartLabel.Foreground = soft;
+            }
+            if (languageLabel != null)
+            {
+                languageLabel.Foreground = soft;
+            }
+            if (backgroundLabel != null)
+            {
+                backgroundLabel.Foreground = soft;
+            }
+            if (settingsError != null)
+            {
+                settingsError.Foreground = error;
+            }
+        }
+
+        private void ApplyAuroraCollapsedTheme()
+        {
+            SolidColorBrush bright = new SolidColorBrush(Color.FromRgb(245, 250, 255));
+            bright.Freeze();
+            SolidColorBrush soft = new SolidColorBrush(Color.FromRgb(214, 226, 240));
+            soft.Freeze();
+            if (collapsedIcon != null) collapsedIcon.Content = CreateClockIcon(16, bright);
+            if (collapsedLabel != null)
+            {
+                collapsedLabel.Foreground = soft;
+            }
+            if (collapsedTime != null)
+            {
+                collapsedTime.Foreground = bright;
+            }
         }
 
         private void OnTick(object sender, EventArgs e)
@@ -556,6 +905,12 @@ namespace OffWorkCountdown
 
             shadow = new Border();
             shadow.Background = Surface;
+            if (AuroraEffect.IsAvailable)
+            {
+                SolidColorBrush darkSurface = new SolidColorBrush(Color.FromRgb(6, 12, 20));
+                darkSurface.Freeze();
+                shadow.Background = darkSurface;
+            }
             shadow.CornerRadius = new CornerRadius(15);
             shadow.IsHitTestVisible = false;
             DropShadowEffect farShadow = new DropShadowEffect();
@@ -567,8 +922,9 @@ namespace OffWorkCountdown
             farShadow.RenderingBias = RenderingBias.Performance;
             shadow.Effect = farShadow;
 
-            Border nearShadow = new Border();
+            nearShadow = new Border();
             nearShadow.Background = Surface;
+            if (backdropMode != "none") nearShadow.Background = new SolidColorBrush(Color.FromRgb(6, 12, 20));
             nearShadow.CornerRadius = new CornerRadius(15);
             nearShadow.IsHitTestVisible = false;
             DropShadowEffect contactShadow = new DropShadowEffect();
@@ -581,9 +937,17 @@ namespace OffWorkCountdown
             nearShadow.Effect = contactShadow;
 
             card = new Border();
-            card.Background = CardFill;
-            card.BorderBrush = CardBorder;
-            card.BorderThickness = new Thickness(1);
+            if (AuroraEffect.IsAvailable)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(6, 12, 20));
+                card.BorderThickness = new Thickness(0);
+            }
+            else
+            {
+                card.Background = CardFill;
+                card.BorderBrush = CardBorder;
+                card.BorderThickness = new Thickness(1);
+            }
             card.CornerRadius = new CornerRadius(15);
             card.SnapsToDevicePixels = true;
             card.Cursor = Cursors.SizeAll;
@@ -612,25 +976,63 @@ namespace OffWorkCountdown
 
             contentHost = new Grid();
             contentHost.ClipToBounds = true;
+            contentHost.SizeChanged += delegate
+            {
+                double width = contentHost.ActualWidth;
+                double height = contentHost.ActualHeight;
+                if (width <= 0.0 || height <= 0.0) return;
+                contentHost.Clip = new RectangleGeometry(new Rect(0.0, 0.0, width, height), 15.0, 15.0);
+                if (auroraEffect != null) auroraEffect.Resolution = new Point(width, height);
+                if (oceanEffect != null) oceanEffect.Resolution = new Point(width, height);
+            };
 
-            Rectangle sheen = new Rectangle();
-            sheen.Height = 46;
-            sheen.VerticalAlignment = VerticalAlignment.Top;
-            sheen.Fill = SheenFill;
-            sheen.IsHitTestVisible = false;
-            contentHost.Children.Add(sheen);
+            auroraEffect = new AuroraEffect();
+            if (AuroraEffect.IsAvailable)
+            {
+                auroraRect = new Rectangle();
+                auroraRect.Fill = Brushes.Black;
+                auroraRect.Effect = auroraEffect;
+                auroraRect.IsHitTestVisible = false;
+                contentHost.Children.Add(auroraRect);
+            }
 
-            Rectangle specular = new Rectangle();
-            specular.Height = 1;
-            specular.VerticalAlignment = VerticalAlignment.Top;
-            specular.Margin = new Thickness(16, 0, 16, 0);
-            specular.Fill = SpecularFill;
-            specular.IsHitTestVisible = false;
-            contentHost.Children.Add(specular);
+            oceanEffect = new OceanEffect();
+            if (OceanEffect.IsAvailable)
+            {
+                oceanRect = new Rectangle();
+                oceanRect.Fill = Brushes.Black;
+                oceanRect.Effect = oceanEffect;
+                oceanRect.IsHitTestVisible = false;
+                oceanRect.Visibility = Visibility.Collapsed;
+                contentHost.Children.Add(oceanRect);
+            }
+
+            if (auroraRect != null) auroraRect.Visibility = backdropMode == "aurora" ? Visibility.Visible : Visibility.Collapsed;
+            if (oceanRect != null) oceanRect.Visibility = backdropMode == "ocean" ? Visibility.Visible : Visibility.Collapsed;
+            auroraActive = backdropMode != "none";
+
+            sheenRect = new Rectangle();
+            sheenRect.Height = 46;
+            sheenRect.VerticalAlignment = VerticalAlignment.Top;
+            sheenRect.Fill = SheenFill;
+            sheenRect.IsHitTestVisible = false;
+            sheenRect.Visibility = backdropMode == "none" ? Visibility.Visible : Visibility.Collapsed;
+            contentHost.Children.Add(sheenRect);
+
+            specularRect = new Rectangle();
+            specularRect.Height = 1;
+            specularRect.VerticalAlignment = VerticalAlignment.Top;
+            specularRect.Margin = new Thickness(16, 0, 16, 0);
+            specularRect.Fill = SpecularFill;
+            specularRect.IsHitTestVisible = false;
+            specularRect.Visibility = backdropMode == "none" ? Visibility.Visible : Visibility.Collapsed;
+            contentHost.Children.Add(specularRect);
 
             contentHost.Children.Add(countdownView);
             contentHost.Children.Add(settingsView);
             contentHost.Children.Add(collapsedView);
+
+            ApplyBackdropTheme();
             card.Child = contentHost;
             card.ContextMenu = BuildContextMenu();
             card.ContextMenu.Closed += delegate { ScheduleDockHide(); };
@@ -651,6 +1053,8 @@ namespace OffWorkCountdown
         private StackPanel BuildCountdownView()
         {
             StackPanel view = new StackPanel();
+            Brush headerBrush = Brushes.White;
+            headerBrush.Freeze();
             view.Margin = new Thickness(18, 14, 18, 16);
 
             Grid header = new Grid();
@@ -660,11 +1064,11 @@ namespace OffWorkCountdown
             status.VerticalAlignment = VerticalAlignment.Center;
 
             headerIcon = new ContentControl();
-            headerIcon.Width = 16;
-            headerIcon.Height = 16;
+            headerIcon.Width = 18;
+            headerIcon.Height = 18;
             headerIcon.Margin = new Thickness(0, 0, 6, 0);
             headerIcon.VerticalAlignment = VerticalAlignment.Center;
-            headerIcon.Content = CreateClockIcon(16, TextSecondary);
+            headerIcon.Content = CreateClockIcon(18, headerBrush);
 
             statusLabel = MakeText(L("距离下班", "Until off work"), 13, FontWeights.Normal, TextSecondary);
             status.Children.Add(headerIcon);
@@ -676,13 +1080,18 @@ namespace OffWorkCountdown
             actions.VerticalAlignment = VerticalAlignment.Top;
 
             settingsButton = CreateIconButton(
-                CreateSettingsIcon(TextSecondary),
+                CreateSettingsIcon(headerBrush),
                 L("设置", "Settings"),
                 delegate { ShowSettings(); });
             collapseButton = CreateIconButton(
-                CreateMinusIcon(16, TextSecondary),
+                CreateMinusIcon(16, headerBrush),
                 L("收起", "Collapse"),
                 delegate { Collapse(); });
+            if (AuroraEffect.IsAvailable)
+            {
+                if (settingsButton.Content is FrameworkElement) ((FrameworkElement)settingsButton.Content).Effect = CreateHeaderShadow();
+                if (collapseButton.Content is FrameworkElement) ((FrameworkElement)collapseButton.Content).Effect = CreateHeaderShadow();
+            }
             settingsButton.Margin = new Thickness(0, 0, 2, 0);
             actions.Children.Add(settingsButton);
             actions.Children.Add(collapseButton);
@@ -922,7 +1331,63 @@ namespace OffWorkCountdown
             languageRow.Children.Add(languageLabel);
             languageRow.Children.Add(languageTrack);
             view.Children.Add(languageRow);
+
+            Grid backdropRow = new Grid();
+            backdropRow.Margin = new Thickness(0, 8, 4, 0);
+
+            backgroundLabel = MakeText(L("背景", "Background"), 12.5, FontWeights.Normal, TextSecondary);
+            backgroundLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            Border backdropTrack = new Border();
+            backdropTrack.Height = 32;
+            backdropTrack.Padding = new Thickness(2);
+            backdropTrack.Background = SurfaceMuted;
+            backdropTrack.BorderBrush = BorderLine;
+            backdropTrack.BorderThickness = new Thickness(1);
+            backdropTrack.CornerRadius = new CornerRadius(9);
+            backdropTrack.HorizontalAlignment = HorizontalAlignment.Right;
+            backdropTrack.VerticalAlignment = VerticalAlignment.Center;
+
+            Grid backdropGrid = new Grid();
+            backdropGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
+            backdropGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
+            backdropGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
+
+            backgroundNoneButton = CreateLanguageSegmentButton(
+                L("无背景", "None"),
+                delegate { SetBackdropMode("none"); });
+            backgroundAuroraButton = CreateLanguageSegmentButton(
+                L("极光", "Aurora"),
+                delegate { SetBackdropMode("aurora"); });
+            backgroundOceanButton = CreateLanguageSegmentButton(
+                L("大海", "Ocean"),
+                delegate { SetBackdropMode("ocean"); });
+            Grid.SetColumn(backgroundAuroraButton, 1);
+            Grid.SetColumn(backgroundOceanButton, 2);
+
+            backgroundThumb = new Border();
+            backgroundThumb.Width = 56;
+            backgroundThumb.Height = 24;
+            backgroundThumb.CornerRadius = new CornerRadius(7);
+            backgroundThumb.Background = Brand;
+            backgroundThumb.HorizontalAlignment = HorizontalAlignment.Left;
+            backgroundThumb.VerticalAlignment = VerticalAlignment.Center;
+            backgroundThumb.IsHitTestVisible = false;
+            backgroundThumb.RenderTransform = new TranslateTransform();
+            Grid.SetColumn(backgroundThumb, 0);
+
+            backdropGrid.Children.Add(backgroundThumb);
+            backdropGrid.Children.Add(backgroundNoneButton);
+            backdropGrid.Children.Add(backgroundAuroraButton);
+            backdropGrid.Children.Add(backgroundOceanButton);
+            backdropTrack.Child = backdropGrid;
+
+            backdropRow.Children.Add(backgroundLabel);
+            backdropRow.Children.Add(backdropTrack);
+            view.Children.Add(backdropRow);
+
             view.Children.Add(settingsError);
+            UpdateBackdropSegments();
             UpdateLanguageSegments();
 
             startBox.KeyDown += OnSettingsKeyDown;
@@ -931,6 +1396,61 @@ namespace OffWorkCountdown
             AutomationProperties.SetName(endBox, L("下班时间", "End time"));
 
             return view;
+        }
+
+        private void SetBackdropMode(string mode)
+        {
+            string normalized = NormalizeBackdrop(mode);
+            if (normalized == backdropMode)
+            {
+                UpdateBackdropSegments();
+                return;
+            }
+            backdropMode = normalized;
+            settings.Background = normalized;
+            SettingsStore.Save(settings);
+            if (auroraRect != null) auroraRect.Visibility = normalized == "aurora" ? Visibility.Visible : Visibility.Collapsed;
+            if (oceanRect != null) oceanRect.Visibility = normalized == "ocean" ? Visibility.Visible : Visibility.Collapsed;
+            auroraActive = normalized != "none";
+            ApplyBackdropTheme();
+            UpdateBackdropSegments();
+        }
+
+        private void UpdateBackdropSegments()
+        {
+            if (backgroundNoneButton == null || backgroundThumb == null) return;
+            int index = backdropMode == "none" ? 0 : (backdropMode == "ocean" ? 2 : 1);
+            TranslateTransform shift = backgroundThumb.RenderTransform as TranslateTransform;
+            if (shift == null)
+            {
+                shift = new TranslateTransform();
+                backgroundThumb.RenderTransform = shift;
+            }
+            double target = index * 56.0;
+            if (IsVisible && currentView == settingsView && SystemParameters.ClientAreaAnimation)
+            {
+                DoubleAnimation slide = new DoubleAnimation(target, TimeSpan.FromMilliseconds(180));
+                slide.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+                shift.BeginAnimation(TranslateTransform.XProperty, slide);
+            }
+            else
+            {
+                shift.BeginAnimation(TranslateTransform.XProperty, null);
+                shift.X = target;
+            }
+            backgroundNoneButton.FontFamily = IsEnglish ? PickEnglishFont() : PickChineseFont();
+            backgroundAuroraButton.FontFamily = IsEnglish ? PickEnglishFont() : PickChineseFont();
+            backgroundOceanButton.FontFamily = IsEnglish ? PickEnglishFont() : PickChineseFont();
+            SetBackdropButtonState(backgroundNoneButton, index == 0);
+            SetBackdropButtonState(backgroundAuroraButton, index == 1);
+            SetBackdropButtonState(backgroundOceanButton, index == 2);
+        }
+
+        private static void SetBackdropButtonState(Button button, bool selected)
+        {
+            if (button == null) return;
+            button.Foreground = selected ? Brushes.White : TextSecondary;
+            button.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
         }
 
         private Button CreateLanguageSegmentButton(string text, RoutedEventHandler click)
@@ -1295,16 +1815,24 @@ namespace OffWorkCountdown
             border.AppendChild(presenter);
             template.VisualTree = border;
 
+            Brush iconHover = HoverFill;
+            Brush iconPressed = PressedFill;
+            if (AuroraEffect.IsAvailable)
+            {
+                iconHover = new SolidColorBrush(Color.FromArgb(70, 0, 0, 0));
+                iconPressed = new SolidColorBrush(Color.FromArgb(110, 0, 0, 0));
+            }
+
             Trigger hover = new Trigger();
             hover.Property = UIElement.IsMouseOverProperty;
             hover.Value = true;
-            hover.Setters.Add(new Setter(Border.BackgroundProperty, HoverFill, "bg"));
+            hover.Setters.Add(new Setter(Border.BackgroundProperty, iconHover, "bg"));
             template.Triggers.Add(hover);
 
             Trigger pressed = new Trigger();
             pressed.Property = ButtonBase.IsPressedProperty;
             pressed.Value = true;
-            pressed.Setters.Add(new Setter(Border.BackgroundProperty, PressedFill, "bg"));
+            pressed.Setters.Add(new Setter(Border.BackgroundProperty, iconPressed, "bg"));
             template.Triggers.Add(pressed);
 
             button.Template = template;
@@ -2344,6 +2872,14 @@ namespace OffWorkCountdown
                 autoStartToggle,
                 L("开机自启开关", "Start with Windows toggle"));
             languageLabel.Text = L("语言", "Language");
+            if (backgroundLabel != null)
+            {
+                backgroundLabel.Text = L("背景", "Background");
+                backgroundNoneButton.Content = L("无背景", "None");
+                backgroundAuroraButton.Content = L("极光", "Aurora");
+                backgroundOceanButton.Content = L("大海", "Ocean");
+                UpdateBackdropSegments();
+            }
             UpdateLanguageSegments();
             UpdateOvernightBadge();
             ToolTipService.SetToolTip(closeSettingsButton, L("关闭设置", "Close settings"));
@@ -2859,19 +3395,23 @@ namespace OffWorkCountdown
             currentPercent = percent;
 
             bool workStateChanged = lastWorking.HasValue && lastWorking.Value != working;
+            bool darkBackdrop = backdropMode != "none";
+            Brush workingAccent = darkBackdrop ? (Brush)Brushes.White : TextSecondary;
+            Brush offAccent = darkBackdrop ? (Brush)AuroraDone : Success;
             if (lastWorking == null || lastWorking.Value != working)
             {
+                double headerSize = darkBackdrop ? 18.0 : 16.0;
                 headerIcon.Content = working
-                    ? (object)CreateClockIcon(16, TextSecondary)
-                    : (object)CreateCheckIcon(16, Success);
+                    ? (object)CreateClockIcon(headerSize, workingAccent)
+                    : (object)CreateCheckIcon(headerSize, offAccent);
                 collapsedIcon.Content = working
-                    ? (object)CreateClockIcon(16, TextSecondary)
-                    : (object)CreateCheckIcon(16, Success);
+                    ? (object)CreateClockIcon(16.0, workingAccent)
+                    : (object)CreateCheckIcon(16.0, offAccent);
                 lastWorking = working;
             }
 
             statusLabel.Text = working ? L("距离下班", "Until off work") : L("已下班", "Off work");
-            statusLabel.Foreground = working ? TextSecondary : Success;
+            statusLabel.Foreground = working ? workingAccent : offAccent;
             AnimateWorkText(working, workStateChanged);
             if (countdownText.Text != countdown) countdownText.Text = countdown;
             footerCaptionRun.Text = working
@@ -2882,9 +3422,18 @@ namespace OffWorkCountdown
             progressFill.Background = working ? ProgressFill : Success;
 
             collapsedLabel.Text = working ? L("距离下班", "Time left") : L("已下班", "Off work");
-            collapsedLabel.Foreground = working ? TextSecondary : Success;
-            collapsedTime.Text = working ? countdown : L("明天见", "Tomorrow");
-            collapsedTime.Foreground = working ? TextPrimary : Success;
+            if (AuroraEffect.IsAvailable)
+            {
+                collapsedLabel.Foreground = working ? AuroraTextSoft : AuroraDone;
+                collapsedTime.Text = working ? countdown : L("明天见", "Tomorrow");
+                collapsedTime.Foreground = working ? AuroraTextBright : AuroraDone;
+            }
+            else
+            {
+                collapsedLabel.Foreground = working ? TextSecondary : Success;
+                collapsedTime.Text = working ? countdown : L("明天见", "Tomorrow");
+                collapsedTime.Foreground = working ? TextPrimary : Success;
+            }
 
             UpdateProgressWidth();
 
@@ -3530,6 +4079,137 @@ namespace OffWorkCountdown
             {
                 appMutex.ReleaseMutex();
                 appMutex.Dispose();
+            }
+        }
+    }
+    /// <summary>
+    /// 极光像素着色器：双色光带 + 垂直光帘，时间常量由窗口每帧推进。
+    /// </summary>
+    internal sealed class AuroraEffect : ShaderEffect
+    {
+        private static readonly PixelShader Shader = LoadShader();
+
+        public static readonly DependencyProperty InputProperty =
+            ShaderEffect.RegisterPixelShaderSamplerProperty("Input", typeof(AuroraEffect), 0);
+
+        public static readonly DependencyProperty TimeProperty =
+            DependencyProperty.Register(
+                "Time",
+                typeof(double),
+                typeof(AuroraEffect),
+                new UIPropertyMetadata(0.0, PixelShaderConstantCallback(0)));
+
+        public static readonly DependencyProperty ResolutionProperty =
+            DependencyProperty.Register(
+                "Resolution",
+                typeof(Point),
+                typeof(AuroraEffect),
+                new UIPropertyMetadata(new Point(300.0, 146.0), PixelShaderConstantCallback(1)));
+
+        public static bool IsAvailable
+        {
+            get { return Shader != null; }
+        }
+
+        public AuroraEffect()
+        {
+            PixelShader = Shader;
+            UpdateShaderValue(InputProperty);
+            UpdateShaderValue(TimeProperty);
+            UpdateShaderValue(ResolutionProperty);
+        }
+
+        public Brush Input
+        {
+            get { return (Brush)GetValue(InputProperty); }
+            set { SetValue(InputProperty, value); }
+        }
+
+        public double Time
+        {
+            get { return (double)GetValue(TimeProperty); }
+            set { SetValue(TimeProperty, value); }
+        }
+
+        public Point Resolution
+        {
+            get { return (Point)GetValue(ResolutionProperty); }
+            set { SetValue(ResolutionProperty, value); }
+        }
+
+        private static PixelShader LoadShader()
+        {
+            Stream stream = typeof(AuroraEffect).Assembly.GetManifestResourceStream("Aurora.ps");
+            if (stream == null) return null;
+            using (stream)
+            {
+                PixelShader shader = new PixelShader();
+                shader.SetStreamSource(stream);
+                return shader;
+            }
+        }
+    }
+    internal sealed class OceanEffect : ShaderEffect
+    {
+        private static readonly PixelShader Shader = LoadShader();
+
+        public static readonly DependencyProperty InputProperty =
+            ShaderEffect.RegisterPixelShaderSamplerProperty("Input", typeof(OceanEffect), 0);
+
+        public static readonly DependencyProperty TimeProperty =
+            DependencyProperty.Register(
+                "Time",
+                typeof(double),
+                typeof(OceanEffect),
+                new UIPropertyMetadata(0.0, PixelShaderConstantCallback(0)));
+
+        public static readonly DependencyProperty ResolutionProperty =
+            DependencyProperty.Register(
+                "Resolution",
+                typeof(Point),
+                typeof(OceanEffect),
+                new UIPropertyMetadata(new Point(300.0, 146.0), PixelShaderConstantCallback(1)));
+
+        public static bool IsAvailable
+        {
+            get { return Shader != null; }
+        }
+
+        public OceanEffect()
+        {
+            PixelShader = Shader;
+            UpdateShaderValue(InputProperty);
+            UpdateShaderValue(TimeProperty);
+            UpdateShaderValue(ResolutionProperty);
+        }
+
+        public Brush Input
+        {
+            get { return (Brush)GetValue(InputProperty); }
+            set { SetValue(InputProperty, value); }
+        }
+
+        public double Time
+        {
+            get { return (double)GetValue(TimeProperty); }
+            set { SetValue(TimeProperty, value); }
+        }
+
+        public Point Resolution
+        {
+            get { return (Point)GetValue(ResolutionProperty); }
+            set { SetValue(ResolutionProperty, value); }
+        }
+
+        private static PixelShader LoadShader()
+        {
+            Stream stream = typeof(OceanEffect).Assembly.GetManifestResourceStream("Ocean.ps");
+            if (stream == null) return null;
+            using (stream)
+            {
+                PixelShader shader = new PixelShader();
+                shader.SetStreamSource(stream);
+                return shader;
             }
         }
     }

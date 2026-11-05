@@ -94,6 +94,50 @@ if ((Test-Path -LiteralPath $mapleRegular) -and (Test-Path -LiteralPath $mapleBo
 foreach ($reference in $references) {
     $cscArgs += "/r:$reference"
 }
+$shaderSource = Join-Path $root 'src\aurora.hlsl'
+$shaderPath = Join-Path $assets 'aurora.ps'
+if (Test-Path -LiteralPath $shaderSource) {
+    $fxc = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.17763.0\x64\fxc.exe'
+    if (-not (Test-Path -LiteralPath $fxc)) {
+        $found = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter fxc.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($found) { $fxc = $found.FullName }
+    }
+    if ($fxc -and (Test-Path -LiteralPath $fxc)) {
+        & $fxc /nologo /T ps_3_0 /E main /O3 /Fo $shaderPath $shaderSource
+        if ($LASTEXITCODE -ne 0) { throw "极光着色器编译失败，退出码 $LASTEXITCODE" }
+    } elseif (-not (Test-Path -LiteralPath $shaderPath)) {
+        throw '找不到 fxc.exe，且没有已编译的 aurora.ps'
+    }
+}
+if (Test-Path -LiteralPath $shaderPath) {
+    $cscArgs += "/resource:$shaderPath,Aurora.ps"
+}
+
+$oceanSource = Join-Path $root 'src\ocean.hlsl'
+$oceanPath = Join-Path $assets 'ocean.ps'
+if (Test-Path -LiteralPath $oceanSource) {
+    $fxcOcean = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.17763.0\x64\fxc.exe'
+    if (-not (Test-Path -LiteralPath $fxcOcean)) {
+        $foundOcean = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter fxc.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($foundOcean) { $fxcOcean = $foundOcean.FullName }
+    }
+    if ($fxcOcean -and (Test-Path -LiteralPath $fxcOcean)) {
+        & $fxcOcean /nologo /T ps_3_0 /E main /O3 /Fo $oceanPath $oceanSource
+        if ($LASTEXITCODE -ne 0) { throw "大海着色器编译失败，退出码 $LASTEXITCODE" }
+    } elseif (-not (Test-Path -LiteralPath $oceanPath)) {
+        throw '找不到 fxc.exe，且没有已编译的 ocean.ps'
+    }
+}
+if (Test-Path -LiteralPath $oceanPath) {
+    $cscArgs += "/resource:$oceanPath,Ocean.ps"
+}
+
 $cscArgs += $src
 
 & $csc $cscArgs
