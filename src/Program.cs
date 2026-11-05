@@ -18,6 +18,7 @@ using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
@@ -272,6 +273,7 @@ namespace OffWorkCountdown
         private readonly DispatcherTimer timer;
 
         private Grid surface;
+        private Grid contentHost;
         private Border shadow;
         private Border card;
         private StackPanel countdownView;
@@ -347,6 +349,7 @@ namespace OffWorkCountdown
         private Button closeSettingsButton;
         private Button languageZhButton;
         private Button languageEnButton;
+        private Border languageThumb;
         private TextBlock settingsTitle;
         private TextBlock startFieldLabel;
         private TextBlock endFieldLabel;
@@ -607,7 +610,7 @@ namespace OffWorkCountdown
             collapsedView.IsHitTestVisible = false;
             currentView = countdownView;
 
-            Grid contentHost = new Grid();
+            contentHost = new Grid();
             contentHost.ClipToBounds = true;
 
             Rectangle sheen = new Rectangle();
@@ -700,6 +703,8 @@ namespace OffWorkCountdown
 
             doneText = MakeText(L("今天辛苦了。", "Good work today."), 26, FontWeights.SemiBold, Success);
             doneText.VerticalAlignment = VerticalAlignment.Center;
+            countdownText.RenderTransform = new TranslateTransform();
+            doneText.RenderTransform = new TranslateTransform();
             doneText.Visibility = Visibility.Collapsed;
 
             timeHost.Children.Add(countdownText);
@@ -809,7 +814,7 @@ namespace OffWorkCountdown
             view.Children.Add(fields);
 
             Grid soundRow = new Grid();
-            soundRow.Margin = new Thickness(0, 10, 0, 0);
+            soundRow.Margin = new Thickness(0, 10, 4, 0);
 
             soundLabel = MakeText(L("下班提醒音", "End-of-day sound"), 12.5, FontWeights.Normal, TextSecondary);
             soundLabel.VerticalAlignment = VerticalAlignment.Center;
@@ -839,7 +844,7 @@ namespace OffWorkCountdown
             view.Children.Add(soundRow);
 
             Grid autoRow = new Grid();
-            autoRow.Margin = new Thickness(0, 6, 0, 0);
+            autoRow.Margin = new Thickness(0, 6, 4, 0);
 
             autoStartLabel = MakeText(L("开机自启", "Start with Windows"), 12.5, FontWeights.Normal, TextSecondary);
             autoStartLabel.VerticalAlignment = VerticalAlignment.Center;
@@ -899,6 +904,17 @@ namespace OffWorkCountdown
                 "English",
                 delegate { SetLanguage("en"); });
             Grid.SetColumn(languageEnButton, 1);
+            languageThumb = new Border();
+            languageThumb.Width = 56;
+            languageThumb.Height = 24;
+            languageThumb.CornerRadius = new CornerRadius(7);
+            languageThumb.Background = Brand;
+            languageThumb.HorizontalAlignment = HorizontalAlignment.Left;
+            languageThumb.VerticalAlignment = VerticalAlignment.Center;
+            languageThumb.IsHitTestVisible = false;
+            languageThumb.RenderTransform = new TranslateTransform();
+            Grid.SetColumn(languageThumb, 0);
+            languageGrid.Children.Add(languageThumb);
             languageGrid.Children.Add(languageZhButton);
             languageGrid.Children.Add(languageEnButton);
             languageTrack.Child = languageGrid;
@@ -960,7 +976,89 @@ namespace OffWorkCountdown
             settings.Language = newLanguage;
             SettingsStore.Save(settings);
             ResetSettingsMessage();
-            ApplyLanguage();
+
+            if (IsVisible && currentView == settingsView && SystemParameters.ClientAreaAnimation)
+            {
+                PlayLanguageTransition();
+            }
+            else
+            {
+                ApplyLanguage();
+            }
+        }
+
+        private void PlayLanguageTransition()
+        {
+            if (contentHost == null)
+            {
+                ApplyLanguage();
+                return;
+            }
+
+            BlurEffect blur = contentHost.Effect as BlurEffect;
+            if (blur == null)
+            {
+                blur = new BlurEffect();
+                blur.KernelType = KernelType.Gaussian;
+                blur.RenderingBias = RenderingBias.Performance;
+                blur.Radius = 0;
+                contentHost.Effect = blur;
+            }
+            ScaleTransform scale = contentHost.RenderTransform as ScaleTransform;
+            if (scale == null)
+            {
+                scale = new ScaleTransform(1, 1);
+                contentHost.RenderTransformOrigin = new Point(0.5, 0.5);
+                contentHost.RenderTransform = scale;
+            }
+
+            DoubleAnimation blurOut = new DoubleAnimation(
+                0,
+                4.5,
+                TimeSpan.FromMilliseconds(110));
+            blurOut.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn };
+            blurOut.Completed += delegate
+            {
+                // 模糊到峰值时替换文字，再模糊回来，切换过程不会生硬跳变。
+                ApplyLanguage();
+                DoubleAnimation blurIn = new DoubleAnimation(
+                    4.5,
+                    0,
+                    TimeSpan.FromMilliseconds(220));
+                blurIn.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+                blur.BeginAnimation(BlurEffect.RadiusProperty, blurIn);
+
+                DoubleAnimation fadeIn = new DoubleAnimation(
+                    0.55,
+                    1,
+                    TimeSpan.FromMilliseconds(220));
+                fadeIn.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+                contentHost.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+
+                DoubleAnimation scaleIn = new DoubleAnimation(
+                    0.99,
+                    1,
+                    TimeSpan.FromMilliseconds(220));
+                scaleIn.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+                scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleIn);
+                scale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleIn);
+            };
+            blur.BeginAnimation(BlurEffect.RadiusProperty, blurOut);
+
+            DoubleAnimation fadeOut = new DoubleAnimation(
+                1,
+                0.55,
+                TimeSpan.FromMilliseconds(110));
+            fadeOut.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn };
+            contentHost.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+
+            DoubleAnimation scaleOut = new DoubleAnimation(
+                1,
+                0.99,
+                TimeSpan.FromMilliseconds(110));
+            scaleOut.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn };
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleOut);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleOut);
         }
 
         private void UpdateLanguageSegments()
@@ -969,10 +1067,35 @@ namespace OffWorkCountdown
             bool english = IsEnglish;
             languageZhButton.FontFamily = PickChineseFont();
             languageEnButton.FontFamily = PickEnglishFont();
-            languageZhButton.Background = english ? Brushes.Transparent : Brand;
+
+            if (languageThumb != null)
+            {
+                TranslateTransform shift = languageThumb.RenderTransform as TranslateTransform;
+                if (shift == null)
+                {
+                    shift = new TranslateTransform();
+                    languageThumb.RenderTransform = shift;
+                }
+                double target = english ? 56 : 0;
+                if (IsVisible && currentView == settingsView)
+                {
+                    DoubleAnimation slide = new DoubleAnimation(
+                        target,
+                        TimeSpan.FromMilliseconds(180));
+                    slide.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+                    shift.BeginAnimation(TranslateTransform.XProperty, slide);
+                }
+                else
+                {
+                    shift.BeginAnimation(TranslateTransform.XProperty, null);
+                    shift.X = target;
+                }
+            }
+
+            languageZhButton.Background = Brushes.Transparent;
+            languageEnButton.Background = Brushes.Transparent;
             languageZhButton.Foreground = english ? TextSecondary : Brushes.White;
             languageZhButton.FontWeight = english ? FontWeights.Normal : FontWeights.SemiBold;
-            languageEnButton.Background = english ? Brand : Brushes.Transparent;
             languageEnButton.Foreground = english ? Brushes.White : TextSecondary;
             languageEnButton.FontWeight = english ? FontWeights.SemiBold : FontWeights.Normal;
         }
@@ -1001,6 +1124,7 @@ namespace OffWorkCountdown
             knob.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Left);
             knob.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
             knob.SetValue(FrameworkElement.MarginProperty, new Thickness(2, 0, 0, 0));
+            knob.SetValue(UIElement.RenderTransformProperty, new TranslateTransform());
             track.AppendChild(knob);
             template.VisualTree = track;
 
@@ -1008,14 +1132,33 @@ namespace OffWorkCountdown
             on.Property = ToggleButton.IsCheckedProperty;
             on.Value = true;
             on.Setters.Add(new Setter(Border.BackgroundProperty, Brand, "track"));
-            on.Setters.Add(new Setter(
-                FrameworkElement.HorizontalAlignmentProperty,
-                HorizontalAlignment.Right,
-                "knob"));
-            on.Setters.Add(new Setter(
-                FrameworkElement.MarginProperty,
-                new Thickness(0, 0, 2, 0),
-                "knob"));
+
+            Storyboard enterStoryboard = new Storyboard();
+            DoubleAnimation enterKnob = new DoubleAnimation(
+                0,
+                16,
+                TimeSpan.FromMilliseconds(170));
+            enterKnob.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+            Storyboard.SetTargetName(enterKnob, "knob");
+            Storyboard.SetTargetProperty(
+                enterKnob,
+                new PropertyPath("(UIElement.RenderTransform).(TranslateTransform.X)"));
+            enterStoryboard.Children.Add(enterKnob);
+            on.EnterActions.Add(new BeginStoryboard { Storyboard = enterStoryboard });
+
+            Storyboard exitStoryboard = new Storyboard();
+            DoubleAnimation exitKnob = new DoubleAnimation(
+                16,
+                0,
+                TimeSpan.FromMilliseconds(170));
+            exitKnob.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+            Storyboard.SetTargetName(exitKnob, "knob");
+            Storyboard.SetTargetProperty(
+                exitKnob,
+                new PropertyPath("(UIElement.RenderTransform).(TranslateTransform.X)"));
+            exitStoryboard.Children.Add(exitKnob);
+            on.ExitActions.Add(new BeginStoryboard { Storyboard = exitStoryboard });
+
             template.Triggers.Add(on);
 
             box.Template = template;
@@ -2262,25 +2405,72 @@ namespace OffWorkCountdown
             return height;
         }
 
-        private static void SetViewState(FrameworkElement view, FrameworkElement visibleView)
+        private static TranslateTransform EnsureShift(FrameworkElement view)
         {
-            bool visible = view == visibleView;
-            view.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-            view.Opacity = visible ? 1 : 0;
-            view.IsHitTestVisible = visible;
+            TranslateTransform shift = view.RenderTransform as TranslateTransform;
+            if (shift == null)
+            {
+                shift = new TranslateTransform();
+                view.RenderTransform = shift;
+            }
+            return shift;
         }
 
-        private void Reveal(FrameworkElement target)
+        private static void AnimateView(
+            FrameworkElement view,
+            double fromOpacity,
+            double toOpacity,
+            double fromY,
+            double toY,
+            int milliseconds,
+            Action completed)
         {
-            SetViewState(countdownView, target);
-            SetViewState(settingsView, target);
-            SetViewState(collapsedView, target);
-            currentView = target;
+            TranslateTransform shift = EnsureShift(view);
+            view.Opacity = toOpacity;
+            DoubleAnimation fade = new DoubleAnimation(
+                fromOpacity,
+                toOpacity,
+                TimeSpan.FromMilliseconds(milliseconds));
+            fade.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+            if (completed != null)
+            {
+                fade.Completed += delegate { completed(); };
+            }
+            view.BeginAnimation(UIElement.OpacityProperty, fade);
+
+            DoubleAnimation slide = new DoubleAnimation(
+                fromY,
+                toY,
+                TimeSpan.FromMilliseconds(milliseconds));
+            slide.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+            shift.BeginAnimation(TranslateTransform.YProperty, slide);
+        }
+
+        private void AnimateSurfaceSize(
+            double fromWidth,
+            double toWidth,
+            double fromHeight,
+            double toHeight)
+        {
+            if (!SystemParameters.ClientAreaAnimation) return;
+
+            DoubleAnimation width = new DoubleAnimation(
+                fromWidth,
+                toWidth,
+                TimeSpan.FromMilliseconds(230));
+            width.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+            surface.BeginAnimation(FrameworkElement.WidthProperty, width);
+
+            DoubleAnimation height = new DoubleAnimation(
+                fromHeight,
+                toHeight,
+                TimeSpan.FromMilliseconds(230));
+            height.EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut };
+            surface.BeginAnimation(FrameworkElement.HeightProperty, height);
         }
 
         /// <summary>
-        /// 从当前视觉状态开始过渡；如果在动画途中再次触发，会从当前尺寸和透明度接着走，
-        /// 不会把点击吞掉，也不会跳回起点。
+        /// 在固定尺寸的顶层窗口内做卡片尺寸/内容过渡，窗口本身不改变大小，避免闪字。
         /// </summary>
         private void SwitchView(FrameworkElement target, double targetWidth, double targetHeight)
         {
@@ -2292,13 +2482,34 @@ namespace OffWorkCountdown
                 return;
             }
 
-            // 不做尺寸动画：直接切换内容和卡片大小。顶层窗口固定为最大尺寸，
-            // 所以不会出现窗口和内容差一帧导致的文字裁切或跳动。
+            FrameworkElement previous = currentView;
+            currentView = target;
+
+            double fromWidth = surface.Width;
+            double fromHeight = surface.Height;
             surface.Width = targetWidth;
             surface.Height = targetHeight;
-            Reveal(target);
+            AnimateSurfaceSize(fromWidth, targetWidth, fromHeight, targetHeight);
 
-            // 尺寸变了以后贴边的锚点要重算；没贴边则重新保证卡片在屏幕内。
+            if (previous != null && previous != target)
+            {
+                previous.IsHitTestVisible = false;
+                AnimateView(previous, previous.Opacity, 0, 0, -6, 170, null);
+            }
+
+            target.Visibility = Visibility.Visible;
+            target.IsHitTestVisible = true;
+            target.Opacity = 0;
+            EnsureShift(target).Y = 7;
+            AnimateView(target, 0, 1, 7, 0, 230, delegate
+            {
+                if (previous != null && previous != target && previous != currentView)
+                {
+                    previous.Visibility = Visibility.Collapsed;
+                    previous.Opacity = 0;
+                }
+            });
+
             if (dockEdge != DockEdge.None)
             {
                 StopDockSlide();
@@ -2312,7 +2523,6 @@ namespace OffWorkCountdown
             UpdateProgressWidth();
             ScheduleDockHide();
         }
-
         private void OnSettingsKeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Enter)
@@ -2648,6 +2858,7 @@ namespace OffWorkCountdown
             }
             currentPercent = percent;
 
+            bool workStateChanged = lastWorking.HasValue && lastWorking.Value != working;
             if (lastWorking == null || lastWorking.Value != working)
             {
                 headerIcon.Content = working
@@ -2661,8 +2872,7 @@ namespace OffWorkCountdown
 
             statusLabel.Text = working ? L("距离下班", "Until off work") : L("已下班", "Off work");
             statusLabel.Foreground = working ? TextSecondary : Success;
-            countdownText.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
-            doneText.Visibility = working ? Visibility.Collapsed : Visibility.Visible;
+            AnimateWorkText(working, workStateChanged);
             if (countdownText.Text != countdown) countdownText.Text = countdown;
             footerCaptionRun.Text = working
                 ? L("下班时间 ", "Off at ")
@@ -2711,6 +2921,38 @@ namespace OffWorkCountdown
             }
         }
 
+        private void AnimateWorkText(bool working, bool animate)
+        {
+            FrameworkElement incoming = working ? (FrameworkElement)countdownText : doneText;
+            FrameworkElement outgoing = working ? (FrameworkElement)doneText : countdownText;
+
+            if (!animate || !SystemParameters.ClientAreaAnimation)
+            {
+                incoming.Visibility = Visibility.Visible;
+                incoming.Opacity = 1;
+                EnsureShift(incoming).Y = 0;
+                outgoing.Visibility = Visibility.Collapsed;
+                outgoing.Opacity = 0;
+                return;
+            }
+
+            incoming.Visibility = Visibility.Visible;
+            incoming.Opacity = 0;
+            EnsureShift(incoming).Y = 8;
+            AnimateView(incoming, 0, 1, 8, 0, 260, delegate
+            {
+                if (lastWorking.HasValue && lastWorking.Value == working)
+                {
+                    outgoing.Visibility = Visibility.Collapsed;
+                    outgoing.Opacity = 0;
+                }
+            });
+
+            if (outgoing.Visibility == Visibility.Visible)
+            {
+                AnimateView(outgoing, 1, 0, 0, -8, 200, null);
+            }
+        }
         private void UpdateProgressWidth()
         {
             if (progressFill == null || progressTrack == null) return;
