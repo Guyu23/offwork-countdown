@@ -1,0 +1,11 @@
+[source.crates-io]
+replace-with = "aliyun"
+
+[source.aliyun]
+registry = "sparse+https://mirrors.aliyun.com/crates.io-index/"
+
+[net]
+retry = 10
+
+[target.x86_64-pc-windows-gnu]
+linker = "D:/Software/mingw/mingw64/bin/x86_64-w64-mingw32-gcc.exe"
