@@ -127,6 +127,21 @@ it: the analytic sky dominates and the clouds have nowhere to show. So the
 shader on the website is not the shader in the export, and the missing clouds are
 a property of the copy we have, not of the conversion.
 
+What was tried afterwards, in case someone picks this up again:
+
+* The right shape of the `SIMPLE_SUN` fix is to declare `sun2` as zero in the
+  `#else` branch, not to compute the analytic sky unconditionally. With that in
+  place the full scattering path builds and looks richer — but still cloudless.
+* `ENABLE_DENSE_RAIN` is 1 and `tonemap` is 9, so the cloud densities are on the
+  path that runs.
+* Probes inside `densities()` show the rain of numbers is fine right up to the
+  end: the 5000–8000 m gate is entered for displayed pixels, `fnoise2` peaks at
+  0.73, `cloud()` at 1.0 — and yet `cld`, read at the line that folds it into
+  `mie`, is below 0.004 everywhere. Something between the gate and the fold
+  clears it; that is where to look next.
+* Raising the march from 8 steps to 128 changes the sky's brightness, not its
+  clouds, so the step size is not the cause on its own.
+
 ## Next
 
 - Round corners, drop shadow and DWM acrylic (`DWMWA_WINDOW_CORNER_PREFERENCE`,
