@@ -303,12 +303,12 @@ static const float moon_s2 = moon_s * moon_s;
 
 //float3 bM = (float3)(21e-6); //normal mie // (float3)(21e-6)
 //float3 bM = (float3)(50e-6); //high mie
-float3 bM2 = (float3)(5e-6);
+static float3 bM2 = (float3)(5e-6);
 
 
 //Rayleigh scattering (sky color, atmospheric up to 8km)
 //float3 bR = float3(5.5e-6, 13.0e-6, 22.4e-6); //normal earth
-float3 bR = float3(5.8e-6, 13.5e-6, 33.1e-6); //original earth
+static float3 bR = float3(5.8e-6, 13.5e-6, 33.1e-6); //original earth
 //float3 bR = float3(5.8e-6, 20.5e-6, 33.1e-6); //redder sunset
 //float3 bR = float3(0.0000058,0.0000135,0.0000331);
 //float3 bR = float3(3.8e-6, 13.5e-6, 33.1e-6);
@@ -319,21 +319,21 @@ float3 bR = float3(5.8e-6, 13.5e-6, 33.1e-6); //original earth
 //float3 bR = float3(3.5e-6, 333.1e-6, 235.8e-6 ); //red-purple
 
 //Wvec3 C = float3(0.0, -R0, 0.0); //planet center
-float3 Ds = normalize(float3(0.0, 0.09, -1.0)); //sun direction?
-float3 Dsm = normalize(float3(0.0, 0.09, -1.0)); //moon direction?
+static float3 Ds = normalize(float3(0.0, 0.09, -1.0)); //sun direction?
+static float3 Dsm = normalize(float3(0.0, 0.09, -1.0)); //moon direction?
 
 static const float PI = 3.14159265358979323846;
 static const float PI_2 = 1.57079632679489661923;
 static const float PI_4 = 0.785398163397448309616;
 
 
-float cloudyhigh = 0.05; //if cloud2 defined
+static float cloudyhigh = 0.05; //if cloud2 defined
 #if ORIG_CLOUD
-float cloudnear = 1.0; //9e3 12e3  //do not render too close clouds on the zenith
-float cloudfar = 1e3; //15e3 17e3
+static float cloudnear = 1.0; //9e3 12e3  //do not render too close clouds on the zenith
+static float cloudfar = 1e3; //15e3 17e3
 #else
-float cloudnear = 1.0; //15e3 17e3
-float cloudfar = 160e3; //9e3 12e3  //do not render too close clouds on the zenith
+static float cloudnear = 1.0; //15e3 17e3
+static float cloudfar = 160e3; //9e3 12e3  //do not render too close clouds on the zenith
 #endif
 
 #define S(x, y, z) smoothstep(x, y, z)
@@ -371,7 +371,7 @@ float3x3 rotateZ(float theta) {
 }
 //AURORA_STUFF
 float2x2 mm2(in float a){float c = cos(a), s = sin(a);return glsl_mat2(c,s,-s,c);}
-float2x2 m2 = glsl_mat2(0.95534, 0.29552, -0.29552, 0.95534);
+static float2x2 m2 = glsl_mat2(0.95534, 0.29552, -0.29552, 0.95534);
 float tri(in float x){return clamp(abs(frac(x)-0.5),0.01,0.49);}
 float2 tri2(in float2 p){return float2(tri(p.x)+tri(p.y),tri(p.y+tri(p.x)));}
 
@@ -1582,10 +1582,10 @@ float3 lensFlare(float2 uv,float2 pos,float whichtype)
 
 
 //SNOW STUFF
-float SIZE_RATE = 0.1;
-float XSPEED = 0.5;
-float YSPEED = 0.75;
-float LAYERS = 20.;
+static float SIZE_RATE = 0.1;
+static float XSPEED = 0.5;
+static float YSPEED = 0.75;
+static float LAYERS = 20.;
 
 float Hash11(float p)
 {

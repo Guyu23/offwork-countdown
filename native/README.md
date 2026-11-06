@@ -106,41 +106,27 @@ obvious next step.
 Reading a pixel back with a staging texture after each stage is what separates a
 drawing bug from a composition bug; it is worth keeping in the toolbox.
 
-## The clouds the export cannot draw
+## The clouds
 
-The published `Image` pass ships `#define SIMPLE_SUN 1`, and the sky is then
-painted by `getAtmosphericScattering()`, an analytic function with no cloud term
-at all. The volumetric cloud layer lives in `scatter()` → `densities()` → the
-`mie` density, and it only reaches the picture through the full-atmosphere branch.
+The published constants do draw the cloud deck. `fnoise2` on the noise texture
+sits around 0.5, `smoothstep(0.44, 0.64, …)` covers most of the slab, and
+`cloud()` then scales that by `5 * rainmulti` (40). A ray through the
+5000–8000 m layer comes back with a density of order 1.
 
-The branch is dead in this export: setting `SIMPLE_SUN 0` stops the shader from
-compiling, because `sun2` is declared inside `#if SIMPLE_SUN` and used outside it
-(source lines 2110, 2263, 2276). Declaring it unconditionally and forcing the
-branch makes the shader build, and probes then show the cloud layer working —
-`h` reaches 7000 m, `fnoise2` peaks at 0.73, `cloud()` at 1.0 — while the final
-composite still comes out flat.
+What erased them was the port. FXC treats a file-scope `float x = …` as a
+uniform in the implicit `$Globals` buffer. The app only binds `b0`, so
+`cloudnear` and `cloudfar` read as 0. The distance factor is
 
-With the switches as shipped, probes of the values `scatter()` hands to the
-compositor read `scat ≈ 0.9`, `themie ≈ 0.1–0.3`, `raleigh ≈ 0.09–0.19`, and a
-picture of `themie` is a smooth band at the horizon with no cloud structure in
-it: the analytic sky dominates and the clouds have nowhere to show. So the
-shader on the website is not the shader in the export, and the missing clouds are
-a property of the copy we have, not of the conversion.
+```
+clamp(1 - (dist - cloudfar) / (cloudfar - cloudnear), 0, 10)
+```
 
-What was tried afterwards, in case someone picks this up again:
-
-* The right shape of the `SIMPLE_SUN` fix is to declare `sun2` as zero in the
-  `#else` branch, not to compute the analytic sky unconditionally. With that in
-  place the full scattering path builds and looks richer — but still cloudless.
-* `ENABLE_DENSE_RAIN` is 1 and `tonemap` is 9, so the cloud densities are on the
-  path that runs.
-* Probes inside `densities()` show the rain of numbers is fine right up to the
-  end: the 5000–8000 m gate is entered for displayed pixels, `fnoise2` peaks at
-  0.73, `cloud()` at 1.0 — and yet `cld`, read at the line that folds it into
-  `mie`, is below 0.004 everywhere. Something between the gate and the fold
-  clears it; that is where to look next.
-* Raising the march from 8 steps to 128 changes the sky's brightness, not its
-  clouds, so the step size is not the cause on its own.
+and with both ends at 0 that clamps to 0, which multiplies the whole layer
+away. A literal `160e3` in the same shader is 160000; only the global was 0.
+The same thing zeroed `bR`, `m2` and the snow speeds. The converter now marks
+those globals `static`, which keeps the initializer inside the invocation.
+The analytic `SIMPLE_SUN` sky stays; the clouds show up through `themie` and
+through `scat` darkening that sky.
 
 ## Next
 

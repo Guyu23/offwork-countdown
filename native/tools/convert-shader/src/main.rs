@@ -225,6 +225,13 @@ fn rewrite(source: &str) -> String {
     // GLSL's two-argument `atan(y, x)` is HLSL's `atan2`.
     text = text.replace("atan(main.x,main.y)", "atan2(main.x, main.y)");
 
+    // A global `float x = ...` is not a GLSL global. FXC puts it in the
+    // implicit `$Globals` buffer, the app never binds that buffer, and the
+    // value reads back as 0. `cloudfar` being 0 makes the cloud distance
+    // factor clamp to 0, which erases the layer. `static` keeps the
+    // initializer and stays inside the invocation, which is what GLSL does.
+    text = static_globals(&text);
+
     // Float literals: GLSL writes `.5` and `2.`, HLSL wants a digit on both
     // sides of the point.
     // `regex` has no look-around, so both rules capture the neighbouring
@@ -281,6 +288,45 @@ fn main() {
         .unwrap_or(0);
     let mut out = std::io::stdout();
     let _ = writeln!(out, "wrote {} ({lines} lines)", output_path.display());
+}
+
+/// File-scope variables the GLSL initializes and then only reads. Matched by
+/// name, at column 0, because this shader also leaves some function locals
+/// unindented.
+const GLOBAL_NAMES: &[&str] = &[
+    "bM2",
+    "bR",
+    "Ds",
+    "Dsm",
+    "cloudyhigh",
+    "cloudnear",
+    "cloudfar",
+    "m2",
+    "SIZE_RATE",
+    "XSPEED",
+    "YSPEED",
+    "LAYERS",
+];
+
+fn static_globals(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 64);
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let is_global = !body.starts_with("//")
+            && !body.starts_with("static ")
+            && GLOBAL_NAMES.iter().any(|name| {
+                let Some((_, after_type)) = body.split_once(char::is_whitespace) else {
+                    return false;
+                };
+                let after_type = after_type.trim_start();
+                after_type.strip_prefix(name).is_some_and(|rest| rest.trim_start().starts_with('='))
+            });
+        if is_global {
+            out.push_str("static ");
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 fn is_ident(byte: u8) -> bool {
