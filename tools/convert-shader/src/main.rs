@@ -1,4 +1,4 @@
-// Turns the Shadertoy `Image` pass in `native/shader-src/Image.txt` into the
+// Turns the Shadertoy `Image` pass in `shader-src/Image.txt` into the
 // HLSL the app compiles at startup.
 //
 // naga's GLSL front end cannot parse sampler or texture declarations at all
@@ -6,7 +6,7 @@
 // spelled out here instead: every difference between the two languages this
 // shader actually uses is handled once, in a place a reader can check.
 //
-//   cargo run --manifest-path native/tools/convert-shader/Cargo.toml
+//   cargo run --manifest-path tools/convert-shader/Cargo.toml
 //
 // The rules, and why each one is there:
 //
@@ -268,7 +268,7 @@ fn main() {
         .join("..")
         .join("..")
         .canonicalize()
-        .expect("native/");
+        .expect("project root");
     let source_path = root.join("shader-src").join("Image.txt");
     let output_path = root.join("src").join("ocean.hlsl");
 

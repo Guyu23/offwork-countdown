@@ -1,8 +1,3 @@
-dist/
-bin/
-obj/
-.vs/
-*.user
-*.suo
-Thumbs.db
-.DS_Store
+/target/
+/tools/convert-shader/target/
+/dist/
