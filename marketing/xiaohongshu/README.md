@@ -12,7 +12,7 @@
 - `copy.md` 主推文案、备选文案、评论区回复。
 - `analysis.md` / `outline.md` 内容分析与图集结构。
 - `prompts/` 每张图的文字、素材和版式 brief。
-- `qr.png` 指向 `https://guyu23.github.io/offwork-countdown/` 的二维码。
+- `qr.png` 指向 `https://offwork.guyu23.xyz/` 的二维码。
 - `render/` 可重新渲染的 HTML/CSS 源文件。
 
 ## 设计

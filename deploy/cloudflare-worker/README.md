@@ -1,5 +1,7 @@
 # Cloudflare 镜像
 
+线上地址：**https://offwork.guyu23.xyz/**。自定义域名已经绑定到 `offwork-countdown` Worker，页面和 `/download` 镜像都由它提供。
+
 这个 Worker 提供两件事：
 
 1. 托管 `docs/` 里的发布页；

@@ -13,9 +13,9 @@
 <p align="center">
   <a href="https://github.com/Guyu23/offwork-countdown/releases/latest"><strong>GitHub 下载</strong></a>
   &nbsp;&nbsp;|&nbsp;&nbsp;
-  <a href="https://gh-proxy.com/https://github.com/Guyu23/offwork-countdown/releases/latest/download/OffWorkCountdown.exe"><strong>国内镜像</strong></a>
+  <a href="https://offwork.guyu23.xyz/download/OffWorkCountdown.exe"><strong>国内镜像</strong></a>
   &nbsp;&nbsp;|&nbsp;&nbsp;
-  <a href="https://guyu23.github.io/offwork-countdown/">发布页</a>
+  <a href="https://offwork.guyu23.xyz/">发布页</a>
 </p>
 
 <p align="center">Windows 10 / 11　64 位　约 1.3 MB　免安装</p>
@@ -85,8 +85,8 @@
 | 来源 | 地址 | 适合 |
 | --- | --- | --- |
 | GitHub Release | [releases/latest](https://github.com/Guyu23/offwork-countdown/releases/latest) | 能正常访问 GitHub 的网络 |
-| 国内镜像 | [OffWorkCountdown.exe](https://gh-proxy.com/https://github.com/Guyu23/offwork-countdown/releases/latest/download/OffWorkCountdown.exe) | 国内网络，Cloudflare 加速 |
-| 发布页 | [guyu23.github.io/offwork-countdown](https://guyu23.github.io/offwork-countdown/) | 截图、功能介绍和两个下载入口 |
+| 国内镜像 | [OffWorkCountdown.exe](https://offwork.guyu23.xyz/download/OffWorkCountdown.exe) | 国内网络，Cloudflare 加速 |
+| 发布页 | [offwork.guyu23.xyz](https://offwork.guyu23.xyz/) | 截图、功能介绍和两个下载入口 |
 
 当前版本：**v2.1.0**。Windows 10 / 11，64 位。
 

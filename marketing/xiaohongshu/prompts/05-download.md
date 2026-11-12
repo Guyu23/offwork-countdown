@@ -11,6 +11,6 @@
 - 页脚：Windows 10 / 11　64 位　免安装 / GitHub　Guyu23/offwork-countdown
 
 图片素材：`assets/offwork-icon.png`、`marketing/xiaohongshu/qr.png`。
-二维码目标：`https://guyu23.github.io/offwork-countdown/`
+二维码目标：`https://offwork.guyu23.xyz/`
 禁止：虚假的“限时免费”、夸张的下载量、无法访问的短链。
 渲染：`render/05.html`。
