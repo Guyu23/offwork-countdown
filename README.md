@@ -119,7 +119,7 @@ Rust + Win32 + Direct3D 11，没有 .NET，也没有 WebView。
 cargo +stable-x86_64-pc-windows-gnu build --release
 ```
 
-图标源文件是 [`assets/offwork-icon.svg`](assets/offwork-icon.svg)，构建时由 [`build.rs`](build.rs) 嵌入 exe。发布页在 [`docs/`](docs/)，小红书图集在 [`marketing/xiaohongshu/`](marketing/xiaohongshu/)。
+图标源文件是 [`assets/offwork-icon.svg`](assets/offwork-icon.svg)，生成的 `.ico` 由 [`build.rs`](build.rs) 嵌入 exe。发布页在 [`docs/`](docs/)，小红书图集在 [`marketing/xiaohongshu/`](marketing/xiaohongshu/)。
 
 ## 关于
 
