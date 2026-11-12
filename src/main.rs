@@ -5,12 +5,13 @@
 
 mod dock;
 mod gfx;
+mod text;
 mod texture;
 
 use std::time::Instant;
 
 use windows::core::{w, Result};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, ScreenToClient, PAINTSTRUCT};
@@ -19,18 +20,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetSystemMetrics, LoadCursorW,
     GetCursorPos, GetWindowLongPtrW, GetWindowRect, MSG, PeekMessageW, PostQuitMessage, RegisterClassW,
     SPI_GETWORKAREA, SPI_SETWORKAREA, SendMessageW, SetWindowLongPtrW, SetWindowPos, SystemParametersInfoW,
-    TranslateMessage, GWLP_USERDATA, HTCAPTION, HTCLIENT, HTTRANSPARENT, IDC_ARROW,
-    PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_DESTROY, WM_DISPLAYCHANGE, WM_ENTERSIZEMOVE,
+    TranslateMessage, GWL_EXSTYLE, GWLP_USERDATA, HTCAPTION, HTCLIENT, HTTRANSPARENT, IDC_ARROW,
+    LWA_ALPHA, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetLayeredWindowAttributes, WM_DESTROY, WM_DISPLAYCHANGE, WM_ENTERSIZEMOVE,
     WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVING,
     WM_NCLBUTTONDOWN, WM_NCHITTEST, WM_PAINT, WM_QUIT, WM_SETTINGCHANGE, WNDCLASSW,
-    WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TRANSPARENT,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
-
-/// The work day this build shows, in seconds since midnight.
-const START: i64 = 9 * 3600;
-const END: i64 = 18 * 3600;
 
 fn main() -> Result<()> {
     unsafe {
@@ -49,7 +46,7 @@ fn main() -> Result<()> {
         let scale = GetDpiForSystem() as f32 / 96.0;
         let pad = (gfx::SHADOW_PAD_DIP * scale).round() as i32;
         let card_w = (gfx::CARD_WIDTH_DIP * scale).round() as i32;
-        let card_h = (gfx::CARD_HEIGHT_DIP * scale).round() as i32;
+        let card_h = (gfx::SETTINGS_CARD_DIP * scale).round() as i32;
         let width = card_w + pad * 2;
         let height = card_h + pad * 2;
         // Sit inside the work area, with a few pixels spare so the shadow is
@@ -94,11 +91,27 @@ fn main() -> Result<()> {
             }
         };
         log(&format!("window {cw}x{ch} dpi {dpi}"));
+        let (start_min, end_min, theme, lang, accent, tuck, caption) = load_schedule();
+        renderer.set_work_minutes(start_min, end_min);
+        renderer.set_theme(theme);
+        renderer.set_lang(lang);
+        renderer.set_accent(accent);
+        renderer.set_tuck(tuck);
+        renderer.set_caption(caption);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut renderer as *mut gfx::Gfx as isize);
+        // Layered is what makes the padding actually click through to other
+        // programs. Alpha stays opaque; only the hit test is affected.
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (style | WS_EX_LAYERED.0) as isize);
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
 
         let mut last = Instant::now();
         let mut message = MSG::default();
+        let (start, end) = renderer.work_seconds();
+        let mut card = frame(start, end, renderer.lang());
+        let mut card_second = local_seconds();
         loop {
+            let frame_began = Instant::now();
             while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
                 if message.message == WM_QUIT {
                     return Ok(());
@@ -109,7 +122,11 @@ fn main() -> Result<()> {
             let now = Instant::now();
             let dt = now.duration_since(last).as_secs_f32().min(0.1);
             last = now;
+            // Sample before prepare. Closing settings and the fade decision share this frame,
+            // and the pointer is still on the gear when that happens.
+            renderer.set_card_hover(pointer_on_card(hwnd, &renderer));
             renderer.prepare(dt);
+            sync_pointer(hwnd, &renderer);
             if renderer.take_layout_dirty() {
                 settle_layout(hwnd, &mut renderer);
             }
@@ -122,29 +139,48 @@ fn main() -> Result<()> {
             } else if !renderer.is_docked() {
                 renderer.set_dock_clip(None);
             }
-            if let Err(error) = renderer.render(&frame(), dt) {
+            let second = local_seconds();
+            let edited = renderer.take_schedule_dirty();
+            if edited {
+                let (start, end) = renderer.work_seconds();
+                save_schedule(
+                    (start / 60) as i32,
+                    (end / 60) as i32,
+                    renderer.theme(),
+                    renderer.lang(),
+                    renderer.accent(),
+                    renderer.tuck_enabled(),
+                    renderer.caption_mode(),
+                );
+            }
+            if second != card_second || edited {
+                let (start, end) = renderer.work_seconds();
+                card = frame(start, end, renderer.lang());
+                card_second = second;
+            }
+            if let Err(error) = renderer.render(&card, dt) {
                 log(&format!("render failed: {error}"));
                 return Ok(());
             }
-            // The fold waits on vsync inside Present. Idle stays near 30 fps:
-            // the ocean is the only thing moving, and it does not need more.
+            // The fold waits on vsync inside Present. Idle aims at 30 fps and
+            // only sleeps the time still left in that budget, so a slow ocean
+            // frame is not charged an extra delay. A tucked peek has almost
+            // nothing on screen, so it coasts at 10 fps.
             if !renderer.is_animating() {
-                std::thread::sleep(std::time::Duration::from_millis(24));
+                let budget = std::time::Duration::from_millis(if renderer.is_tucked() { 100 } else { 33 });
+                if let Some(rest) = budget.checked_sub(frame_began.elapsed()) {
+                    std::thread::sleep(rest);
+                }
             }
         }
     }
 }
 
-/// The card's content at this moment.
-fn frame() -> gfx::Frame {
-    let now = local_seconds();
-    let done = now >= END;
-    let remaining = if done { 0 } else { END - now };
-    let progress = if done {
-        1.0
-    } else {
-        ((now - START) as f32 / (END - START) as f32).clamp(0.0, 1.0)
-    };
+/// The card's content at this moment. `start` and `end` are seconds since midnight.
+fn frame(start: i64, end: i64, lang: u8) -> gfx::Frame {
+    let (done, remaining, progress) = countdown(local_seconds(), start, end);
+    let copy = text::phrases(lang);
+    let clock = hhmm((end / 60) as i32);
     gfx::Frame {
         time_text: format!(
             "{:02}:{:02}:{:02}",
@@ -152,13 +188,108 @@ fn frame() -> gfx::Frame {
             (remaining % 3600) / 60,
             remaining % 60
         ),
-        label: if done { "下班啦".to_string() } else { "距离下班".to_string() },
-        footer_left: "下班时间 18:00".to_string(),
+        label: copy.away.to_string(),
+        done_label: copy.done.to_string(),
+        farewell: copy.farewell.to_string(),
+        bye: copy.bye.to_string(),
+        footer_left: text::footer_off(lang, &clock),
+        footer_done: text::footer_next(lang, &clock),
         footer_right: format!("{:.0}%", progress * 100.0),
         progress,
-        background: 1.0,
+        done,
         paused: false,
     }
+}
+
+/// `(done, seconds still to go, progress through the shift)`.
+///
+/// An end at or before the start is that clock time the next day, so a
+/// 22:00–06:00 shift and a 09:00–09:00 shift both stay on one timeline.
+/// A day shift still counts down to `end` even before `start`.
+fn countdown(now: i64, start: i64, end: i64) -> (bool, i64, f32) {
+    let day = 24 * 3600;
+    let now = now.rem_euclid(day);
+    let start = start.rem_euclid(day);
+    let end_clock = end.rem_euclid(day);
+    let end = if end_clock <= start { end_clock + day } else { end_clock };
+    let now = if end > day && now < start { now + day } else { now };
+    if now >= end {
+        return (true, 0, 1.0);
+    }
+    let span = (end - start).max(1);
+    let progress = ((now - start) as f32 / span as f32).clamp(0.0, 1.0);
+    (false, end - now, progress)
+}
+
+fn hhmm(mins: i32) -> String {
+    format!("{:02}:{:02}", mins.div_euclid(60).rem_euclid(24), mins.rem_euclid(60))
+}
+
+fn schedule_path() -> std::path::PathBuf {
+    let mut path = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    path.push("OffWorkCountdown");
+    path.push("schedule.txt");
+    path
+}
+
+fn load_schedule() -> (i32, i32, u8, u8, u8, bool, u8) {
+    std::fs::read_to_string(schedule_path())
+        .ok()
+        .and_then(|text| parse_schedule(&text))
+        .unwrap_or((9 * 60, 18 * 60, 1, 0, 0, true, 0))
+}
+
+fn parse_schedule(text: &str) -> Option<(i32, i32, u8, u8, u8, bool, u8)> {
+    let mut parts = text.split_whitespace();
+    let start = parse_hhmm(parts.next()?)?;
+    let end = parse_hhmm(parts.next()?)?;
+    let theme = match parts.next() {
+        Some("paper") => 0,
+        Some("aurora") => 2,
+        Some("ridge") => 3,
+        _ => 1,
+    };
+    let lang = parts.next().map(text::lang_from_token).unwrap_or(0);
+    let accent = parts.next().map(text::accent_from_token).unwrap_or(0);
+    let tuck = parts.next().map(text::tuck_enabled).unwrap_or(true);
+    let caption = parts.next().map(text::caption_mode).unwrap_or(0);
+    Some((start, end, theme, lang, accent, tuck, caption))
+}
+
+fn parse_hhmm(text: &str) -> Option<i32> {
+    let (hour, minute) = text.split_once(':')?;
+    let hour: i32 = hour.parse().ok()?;
+    let minute: i32 = minute.parse().ok()?;
+    if (0..24).contains(&hour) && (0..60).contains(&minute) {
+        Some(hour * 60 + minute)
+    } else {
+        None
+    }
+}
+
+fn save_schedule(start_min: i32, end_min: i32, theme: u8, lang: u8, accent: u8, tuck: bool, caption: u8) {
+    let path = schedule_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let backdrop = match theme {
+        0 => "paper",
+        2 => "aurora",
+        3 => "ridge",
+        _ => "sea",
+    };
+    let text = format!(
+        "{} {} {backdrop} {} {} {} {}\n",
+        hhmm(start_min),
+        hhmm(end_min),
+        text::lang_token(lang),
+        text::accent_token(accent),
+        text::tuck_token(tuck),
+        text::caption_token(caption),
+    );
+    let _ = std::fs::write(path, text);
 }
 
 /// Appends a line to `%TEMP%\offwork-countdown.log`, so a failure leaves a trace.
@@ -212,6 +343,29 @@ fn cursor_on_card(hwnd: HWND, gfx: &gfx::Gfx, work: RECT) -> bool {
     point.x >= card.left && point.y >= card.top && point.x < card.right && point.y < card.bottom
 }
 
+/// True when the pointer is on the rounded card the user can see.
+/// A floating card has no dock, so this cannot reuse the dock hover flag.
+fn pointer_on_card(hwnd: HWND, gfx: &gfx::Gfx) -> bool {
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+        return false;
+    }
+    let mut client = cursor;
+    let _ = unsafe { ScreenToClient(hwnd, &mut client) };
+    if matches!(gfx.hit(client.x, client.y), gfx::Hit::Miss) {
+        return false;
+    }
+    let monitor = match gfx.dock_monitor() {
+        Some(monitor) => monitor,
+        None => dock::monitor_from_point(cursor),
+    };
+    let Some(info) = dock::monitor_info(monitor) else {
+        return false;
+    };
+    let work = info.rcWork;
+    cursor.x >= work.left && cursor.y >= work.top && cursor.x < work.right && cursor.y < work.bottom
+}
+
 fn place_dock(hwnd: HWND, gfx: &mut gfx::Gfx, origin: (i32, i32), work: RECT) {
     let (pad, _, _) = gfx.card_px();
     let x = origin.0 - pad;
@@ -243,6 +397,46 @@ fn place_dock(hwnd: HWND, gfx: &mut gfx::Gfx, origin: (i32, i32), work: RECT) {
     }
 }
 
+/// The shadow padding is not part of the card. While the pointer is outside
+/// the rounded card, the window is skipped by hit-testing so a click lands
+/// on whatever is underneath. `HTTRANSPARENT` only reaches windows in this
+/// thread, which leaves desktop icons stuck.
+fn sync_pointer(hwnd: HWND, gfx: &gfx::Gfx) {
+    if gfx.is_moving() || unsafe { GetCapture() } == hwnd {
+        set_click_through(hwnd, false);
+        return;
+    }
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+        return;
+    }
+    let mut client = cursor;
+    let _ = unsafe { ScreenToClient(hwnd, &mut client) };
+    let on_card = !matches!(gfx.hit(client.x, client.y), gfx::Hit::Miss);
+    set_click_through(hwnd, !on_card);
+}
+
+fn set_click_through(hwnd: HWND, through: bool) {
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let bit = WS_EX_TRANSPARENT.0;
+        if (style & bit != 0) == through {
+            return;
+        }
+        let next = if through { style | bit } else { style & !bit };
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next as isize);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+}
+
 fn finish_move(hwnd: HWND) {
     let Some(gfx) = gfx_from(hwnd) else { return };
     let mut cursor = POINT::default();
@@ -255,6 +449,8 @@ fn finish_move(hwnd: HWND) {
     let monitor = dock::monitor_from_point(center);
     let Some(info) = dock::monitor_info(monitor) else { return };
     gfx.end_window_drag(cursor, card, info.rcWork, monitor, dock::outer_edges(monitor));
+    apply_seat(hwnd, gfx);
+    seat_above_taskbar(hwnd, gfx, info.rcWork);
 }
 
 fn settle_layout(hwnd: HWND, gfx: &mut gfx::Gfx) {
@@ -275,10 +471,53 @@ fn settle_layout(hwnd: HWND, gfx: &mut gfx::Gfx) {
         }
         gfx.clear_dock();
         gfx.rescue(card, info.rcWork, monitor, outer);
+        apply_seat(hwnd, gfx);
+        seat_above_taskbar(hwnd, gfx, info.rcWork);
         return;
     }
     if !dock::intersects(card, info.rcWork) {
         gfx.rescue(card, info.rcWork, monitor, outer);
+        apply_seat(hwnd, gfx);
+    }
+    seat_above_taskbar(hwnd, gfx, info.rcWork);
+}
+
+fn apply_seat(hwnd: HWND, gfx: &mut gfx::Gfx) {
+    let Some((x, y)) = gfx.take_seat() else { return };
+    let (pad, _, _) = gfx.card_px();
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            x - pad,
+            y - pad,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// A drop on the bottom stays on screen. If the card hangs past the taskbar,
+/// pull it up until it sits flush with the work area.
+fn seat_above_taskbar(hwnd: HWND, gfx: &gfx::Gfx, work: RECT) {
+    if gfx.is_docked() {
+        return;
+    }
+    let card = card_rect(hwnd, gfx);
+    let Some(top) = dock::lift_above_bottom(card, work) else { return };
+    let mut window = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut window);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            window.left,
+            window.top + (top - card.top),
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
@@ -292,6 +531,7 @@ fn client_from_screen(hwnd: HWND, lparam: LPARAM) -> (i32, i32) {
 #[link(name = "user32")]
 extern "system" {
     fn SetCapture(hwnd: HWND) -> HWND;
+    fn GetCapture() -> HWND;
     fn ReleaseCapture() -> i32;
 }
 
@@ -319,7 +559,9 @@ unsafe extern "system" fn window_proc(
             LRESULT(match gfx_from(hwnd).map(|gfx| gfx.hit(x, y)) {
                 Some(gfx::Hit::Miss) | None => HTTRANSPARENT as isize,
                 Some(gfx::Hit::Drag) => HTCAPTION as isize,
-                Some(gfx::Hit::Chrome(_) | gfx::Hit::Pill | gfx::Hit::Peek) => HTCLIENT as isize,
+                Some(gfx::Hit::Chrome(_) | gfx::Hit::Pill | gfx::Hit::Peek | gfx::Hit::Step(_) | gfx::Hit::Segment(_) | gfx::Hit::Lang(_) | gfx::Hit::Accent(_) | gfx::Hit::Tuck(_) | gfx::Hit::Caption(_)) => {
+                HTCLIENT as isize
+            }
             })
         }
         WM_ENTERSIZEMOVE => {
@@ -394,5 +636,79 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{countdown, parse_schedule};
+
+    #[test]
+    fn a_day_shift_counts_down_to_the_end() {
+        let start = 9 * 3600;
+        let end = 18 * 3600;
+        let (done, remaining, progress) = countdown(8 * 3600, start, end);
+        assert!(!done);
+        assert_eq!(remaining, 10 * 3600);
+        assert_eq!(progress, 0.0);
+
+        let (done, remaining, progress) = countdown(13 * 3600 + 30 * 60, start, end);
+        assert!(!done);
+        assert_eq!(remaining, 4 * 3600 + 30 * 60);
+        assert!((progress - 0.5).abs() < 0.001);
+
+        let (done, remaining, _) = countdown(18 * 3600, start, end);
+        assert!(done);
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn an_overnight_shift_stays_open_past_midnight() {
+        let start = 22 * 3600;
+        let end = 6 * 3600;
+        let (done, remaining, _) = countdown(23 * 3600, start, end);
+        assert!(!done);
+        assert_eq!(remaining, 7 * 3600);
+
+        let (done, remaining, _) = countdown(3 * 3600, start, end);
+        assert!(!done);
+        assert_eq!(remaining, 3 * 3600);
+
+        let (done, _, _) = countdown(12 * 3600, start, end);
+        assert!(done);
+    }
+
+    #[test]
+    fn an_end_at_the_start_clock_is_the_next_day() {
+        let start = 9 * 3600;
+        let end = 9 * 3600;
+        let (done, remaining, _) = countdown(10 * 3600, start, end);
+        assert!(!done);
+        assert_eq!(remaining, 23 * 3600);
+
+        let (done, remaining, _) = countdown(8 * 3600, start, end);
+        assert!(!done);
+        assert_eq!(remaining, 1 * 3600);
+
+        let (done, remaining, _) = countdown(9 * 3600, start, end);
+        assert!(!done);
+        assert_eq!(remaining, 24 * 3600);
+    }
+
+    #[test]
+    fn schedule_file_is_two_clock_times() {
+        assert_eq!(parse_schedule("09:00 18:30\n"), Some((9 * 60, 18 * 60 + 30, 1, 0, 0, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 paper"), Some((9 * 60, 18 * 60, 0, 0, 0, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 sea snow"), Some((9 * 60, 18 * 60, 1, 0, 0, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 aurora"), Some((9 * 60, 18 * 60, 2, 0, 0, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 ridge"), Some((9 * 60, 18 * 60, 3, 0, 0, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 sea ja"), Some((9 * 60, 18 * 60, 1, 1, 0, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 paper en"), Some((9 * 60, 18 * 60, 0, 2, 0, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 ridge ko"), Some((9 * 60, 18 * 60, 3, 3, 0, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 aurora ja pink"), Some((9 * 60, 18 * 60, 2, 1, 1, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 sea zh sky"), Some((9 * 60, 18 * 60, 1, 0, 2, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 paper en gold"), Some((9 * 60, 18 * 60, 0, 2, 3, true, 0)));
+        assert_eq!(parse_schedule("09:00 18:00 ridge zh gold stay hover"), Some((9 * 60, 18 * 60, 3, 0, 3, false, 1)));
+        assert_eq!(parse_schedule("25:00 18:00"), None);
     }
 }

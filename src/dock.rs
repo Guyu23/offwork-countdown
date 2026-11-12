@@ -1,7 +1,9 @@
 // Edge docking. A drop near an outer edge of the work area slides the card
-// out that way until only a peek remains. A corner parks against both edges
-// and hides by priority: top, then either side, then the bottom. A release
-// past the peek springs back to it. Shared monitor edges are not docks.
+// out that way until only a peek remains. The bottom edge does not hide:
+// a card left there stays fully visible, and one that hangs past the taskbar
+// is lifted back onto the work area. A corner still parks against the bottom
+// while a side or the top does the hiding. A release past the peek springs
+// back to it. Shared monitor edges are not docks.
 
 use windows::core::BOOL;
 use windows::Win32::Foundation::{LPARAM, POINT, RECT};
@@ -59,8 +61,8 @@ pub struct Placement {
 ///
 /// `threshold` is in pixels. A gap at or inside it is close enough to dock
 /// (negative means the card already sticks out past that edge). A corner
-/// hides by priority: top, then a side, then the bottom. The other edge
-/// only parks the card in that corner.
+/// hides by priority: top, then a side. The bottom is never the hiding edge;
+/// it only parks a corner. The other edge only parks the card in that corner.
 pub fn plan(card: RECT, work: RECT, outer: Edges, threshold: i32) -> Option<Placement> {
     let gaps = [
         (Side::Left, card.left - work.left),
@@ -83,7 +85,13 @@ pub fn plan(card: RECT, work: RECT, outer: Edges, threshold: i32) -> Option<Plac
         }
     }
 
-    let edge = choose_edge(&candidates);
+    // Bottom stays in `candidates` so a corner can park on it, but it never
+    // slides the card down off the work area.
+    let hiding: Vec<(Side, i32)> = candidates.iter().copied().filter(|(side, _)| *side != Side::Bottom).collect();
+    if hiding.is_empty() {
+        return None;
+    }
+    let edge = choose_edge(&hiding);
     let corner = candidates
         .iter()
         .copied()
@@ -134,6 +142,44 @@ pub fn intersects(a: RECT, b: RECT) -> bool {
     a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
 }
 
+/// Top of a card that hangs below `work`, so it sits flush above the taskbar.
+/// A card already inside the work area is left where it is.
+/// Card origin that keeps the whole card inside the work area.
+pub fn clamp_inside(card: RECT, work: RECT) -> (i32, i32) {
+    let width = card.right - card.left;
+    let height = card.bottom - card.top;
+    let mut x = card.left;
+    let mut y = card.top;
+    if x < work.left {
+        x = work.left;
+    }
+    if y < work.top {
+        y = work.top;
+    }
+    if x + width > work.right {
+        x = work.right - width;
+    }
+    if y + height > work.bottom {
+        y = work.bottom - height;
+    }
+    if x < work.left {
+        x = work.left;
+    }
+    if y < work.top {
+        y = work.top;
+    }
+    (x, y)
+}
+
+pub fn lift_above_bottom(card: RECT, work: RECT) -> Option<i32> {
+    if card.bottom <= work.bottom {
+        return None;
+    }
+    let height = card.bottom - card.top;
+    let top = (work.bottom - height).max(work.top);
+    if top == card.top { None } else { Some(top) }
+}
+
 pub struct Dock {
     pub monitor: HMONITOR,
     pub edge: Side,
@@ -178,7 +224,7 @@ impl Dock {
         }
     }
 
-    pub fn tick(&mut self, dt: f32, hover: bool, card_w: i32, card_h: i32, peek: i32) {
+    pub fn tick(&mut self, dt: f32, hover: bool, card_w: i32, card_h: i32, peek: i32, allow_hide: bool) {
         if self.suspended {
             return;
         }
@@ -193,13 +239,17 @@ impl Dock {
                     self.retarget(0.0, shown);
                 }
             }
-        } else {
+        } else if allow_hide {
             self.hover = 0.0;
             self.hover_armed = true;
             self.away += dt;
             if self.away >= AWAY_SECS {
                 self.retarget(1.0, shown);
             }
+        } else {
+            self.hover = 0.0;
+            self.hover_armed = true;
+            self.away = 0.0;
         }
         if self.t < 1.0 {
             self.t = (self.t + dt / SLIDE_SECS).min(1.0);
@@ -241,6 +291,11 @@ impl Dock {
             }
             _ => end,
         }
+    }
+
+    /// Fully out and finished sliding. Used to drop a dock that may no longer hide.
+    pub fn resting_open(&self) -> bool {
+        self.t >= 1.0 && self.slide < 0.05 && self.slide_target < 0.5
     }
 
     pub fn is_tucked(&self, card_w: i32, card_h: i32) -> bool {
@@ -439,6 +494,23 @@ mod tests {
     }
 
     #[test]
+    fn the_bottom_edge_does_not_hide() {
+        let card = rect(400, 660, 700, 810);
+        assert_eq!(place(card, Edges::all()), None);
+    }
+
+    #[test]
+    fn a_card_below_the_work_area_is_not_a_downward_dock() {
+        let work = rect(0, 0, 1000, 800);
+        let card = rect(400, 820, 700, 970);
+        assert_eq!(plan(card, work, Edges::all(), 24), None);
+        assert_eq!(lift_above_bottom(card, work), Some(650));
+        assert_eq!(clamp_inside(card, work), (400, 650));
+        assert_eq!(clamp_inside(rect(-30, 40, 70, 190), work), (0, 40));
+        assert_eq!(clamp_inside(rect(900, 10, 1100, 160), work), (800, 10));
+    }
+
+    #[test]
     fn a_bottom_corner_hides_sideways() {
         // The bottom sticks out further, and the side still wins.
         let card = rect(680, 670, 980, 820);
@@ -489,7 +561,7 @@ mod tests {
         let mut dock = Dock::engage(HMONITOR::default(), placement, from, work);
         let mut steps = 0;
         while dock.t < 1.0 && steps < 20 {
-            dock.tick(0.05, false, 100, 150, 8);
+            dock.tick(0.05, false, 100, 150, 8, true);
             steps += 1;
         }
         assert_eq!(dock.origin(100, 150, 8), (1000 - 8, 120));
@@ -501,11 +573,11 @@ mod tests {
         let work = rect(0, 0, 1000, 800);
         let placement = Placement { edge: Side::Right, corner: None, along: 120 };
         let mut dock = Dock::engage(HMONITOR::default(), placement, (900, 120), work);
-        dock.tick(0.3, true, 100, 150, 8);
+        dock.tick(0.3, true, 100, 150, 8, true);
         assert!((dock.slide_target - 1.0).abs() < 0.01);
-        dock.tick(0.05, false, 100, 150, 8);
-        dock.tick(0.1, true, 100, 150, 8);
-        dock.tick(0.1, true, 100, 150, 8);
+        dock.tick(0.05, false, 100, 150, 8, true);
+        dock.tick(0.1, true, 100, 150, 8, true);
+        dock.tick(0.1, true, 100, 150, 8, true);
         assert!((dock.slide_target - 0.0).abs() < 0.01);
     }
 
@@ -515,7 +587,7 @@ mod tests {
         let placement = Placement { edge: Side::Right, corner: Some(Side::Bottom), along: 400 };
         let mut dock = Dock::engage(HMONITOR::default(), placement, (880, 400), work);
         for _ in 0..8 {
-            dock.tick(0.1, false, 120, 150, 8);
+            dock.tick(0.1, false, 120, 150, 8, true);
         }
         assert_eq!(dock.origin(120, 150, 8), (1000 - 8, 800 - 150));
     }
@@ -529,7 +601,7 @@ mod tests {
         let peek_x = 1000 - 8;
         let mut innermost = from.0;
         for _ in 0..40 {
-            dock.tick(0.02, false, 200, 150, 8);
+            dock.tick(0.02, false, 200, 150, 8, true);
             innermost = innermost.min(dock.origin(200, 150, 8).0);
         }
         assert!(innermost < peek_x);
