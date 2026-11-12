@@ -1,3 +1,7 @@
 /target/
 /tools/convert-shader/target/
 /dist/
+
+/target-shot/
+/target-v2/
+/tools/font-src/*.otf
