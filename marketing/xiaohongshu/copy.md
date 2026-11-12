@@ -91,5 +91,6 @@
 - 封面用 `images/01.png`，其余按 02 到 05 的顺序上传。
 - 图片比例 3:4，1080 × 1440；小红书上传后不要裁切。
 - 正文里的空行保留，阅读节奏会更好。
-- 二维码指向 `https://offwork.guyu23.xyz`，国内可直接访问。
+- 二维码指向 `https://guyu23.github.io/offwork-countdown/`。
+- 发布页里的国内下载走 Cloudflare 的 `gh-proxy.com`，已验证能取到最新 Release。
 - 若发布前域名或下载地址变化，重新生成 `qr.png` 后再渲染第 5 张。

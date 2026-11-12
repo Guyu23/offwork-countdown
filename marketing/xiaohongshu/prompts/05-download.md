@@ -7,10 +7,10 @@
 
 - 标题：带走一个下班倒计时。
 - 说明：Windows 10 / 11，64 位。单文件，免安装。
-- 面板：下班倒计时 / 扫码去发布页 / 国内可访问。GitHub 下载和国内镜像都在同一页。
+- 面板：下班倒计时 / 扫码去发布页 / 发布页和下载镜像都在这里。GitHub 与 Cloudflare 两个入口。
 - 页脚：Windows 10 / 11　64 位　免安装 / GitHub　Guyu23/offwork-countdown
 
 图片素材：`assets/offwork-icon.png`、`marketing/xiaohongshu/qr.png`。
-二维码目标：`https://offwork.guyu23.xyz`
+二维码目标：`https://guyu23.github.io/offwork-countdown/`
 禁止：虚假的“限时免费”、夸张的下载量、无法访问的短链。
 渲染：`render/05.html`。
