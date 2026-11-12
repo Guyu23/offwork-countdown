@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#07121b"/>
+      <stop offset="0.52" stop-color="#0c222d"/>
+      <stop offset="1" stop-color="#12343b"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.42" r="0.62">
+      <stop offset="0" stop-color="#fff8e7"/>
+      <stop offset="0.46" stop-color="#ffd7a4"/>
+      <stop offset="0.8" stop-color="#ff9f68"/>
+      <stop offset="1" stop-color="#e86f4b"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffb277" stop-opacity="0.6"/>
+      <stop offset="0.5" stop-color="#ff9b5c" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#ff9b5c" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0e2a33"/>
+      <stop offset="1" stop-color="#07161e"/>
+    </linearGradient>
+    <clipPath id="round"><rect width="1024" height="1024" rx="232"/></clipPath>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="42"/></filter>
+  </defs>
+  <g clip-path="url(#round)">
+    <rect width="1024" height="1024" fill="url(#sky)"/>
+    <circle cx="512" cy="548" r="440" fill="url(#glow)" filter="url(#soft)"/>
+    <circle cx="512" cy="502" r="228" fill="url(#sun)"/>
+    <rect x="0" y="648" width="1024" height="376" fill="url(#water)"/>
+    <path d="M118 648 H906" stroke="#f9e9d2" stroke-opacity="0.6" stroke-width="8"/>
+    <path d="M208 710 H816 M272 760 H752 M344 806 H680" stroke="#ffd8ad" stroke-opacity="0.16" stroke-width="10" stroke-linecap="round"/>
+    <rect x="166" y="846" width="692" height="20" rx="10" fill="#fff1dc" fill-opacity="0.22"/>
+    <rect x="166" y="846" width="470" height="20" rx="10" fill="#fff1dc"/>
+    <circle cx="636" cy="856" r="18" fill="#ffe9cd"/>
+  </g>
+</svg>

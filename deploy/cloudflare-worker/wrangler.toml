@@ -1,0 +1,8 @@
+name = "offwork-countdown"
+main = "worker.js"
+compatibility_date = "2026-11-12"
+
+[assets]
+directory = "../../docs"
+binding = "ASSETS"
+not_found_handling = "404-page"
